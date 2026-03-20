@@ -14,7 +14,7 @@ const {
   updateMe,
   updateMyAddress,
   deleteMyAddress,
-} = require('../controllers/profileController');
+} = require('../controllers/profileController.js');
 
 const router = express.Router();
 
