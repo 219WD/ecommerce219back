@@ -13,7 +13,7 @@ let cronTimer = null;
 // JOB PRINCIPAL
 // ════════════════════════════════════════════════════════════════════════════════
 const runAbandonedCartJob = async () => {
-  try {
+  try {  
     const now = new Date();
 
     // ── Buscar carritos inicializados con items, sin email enviado,

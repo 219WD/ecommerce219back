@@ -5,7 +5,7 @@ const rateLimit = require("express-rate-limit");
 require("dotenv").config();
 
 const server = express();
-
+    
 // ─── Importación de rutas ────────────────────────────────────────────────────
 const RegisterRouter    = require("./router/Register");
 const LoginRouter       = require("./router/Login");

@@ -21,7 +21,7 @@ Mercado_Pago.post("/pagar", async (req, res) => {
         details: "No se recibieron items para procesar el pago"
       });
     }
-
+   
     const validatedItems = items.map((item, index) => {
       if (!item.title || !item.price || !item.quantity) {
         throw new Error(`Item en posición ${index} no tiene la estructura correcta`);
