@@ -1,423 +1,524 @@
-const Cart = require("../models/Cart");
-const Product = require("../models/Product");
+const Cart = require('../models/Cart');
+const Product = require('../models/Product');
+const User = require('../models/User');
 const {
   sendPedidoConfirmadoEmail,
   sendPagoConfirmadoEmail,
   sendEnPreparacionEmail,
-  sendPedidoEntregadoEmail
+  sendEnCaminoEmail,
+  sendPedidoEntregadoEmail,
 } = require('../utils/emailSender');
-const User = require('../models/User');
 
-// 👉 Obtener todos los carritos
+// ─── Helper: verificar permisos sobre un carrito ──────────────────────────────
+const canAccessCart = (req, cart) => {
+  return (
+    req.user._id.toString() === cart.userId.toString() ||
+    req.user.isAtLeast('moderador')
+  );
+};
+
+// ─── Helper: poblar carrito ───────────────────────────────────────────────────
+const populateCart = (query) =>
+  query
+    .populate('items.productId', 'title image price isActive')
+    .populate('userId', 'name email');
+
+// ════════════════════════════════════════════════════════════════════════════════
+// GET /cart/all — todos los carritos (moderador+)
+// ════════════════════════════════════════════════════════════════════════════════
 const getAllCarts = async (req, res) => {
   try {
-    const carts = await Cart.find()
-      .populate("items.productId")
-      .populate("userId", "name");
-    res.status(200).json(carts);
+    const { status, page = 1, limit = 20 } = req.query;
+    const filter = {};
+    if (status) filter.status = status;
+
+    const carts = await populateCart(
+      Cart.find(filter).sort({ updatedAt: -1 })
+    )
+      .skip((page - 1) * limit)
+      .limit(Number(limit));
+
+    const total = await Cart.countDocuments(filter);
+
+    res.json({ carts, total, page: Number(page), pages: Math.ceil(total / limit) });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error('getAllCarts:', err);
+    res.status(500).json({ error: 'Error al obtener carritos' });
   }
 };
 
-// 👉 Obtener el último carrito de un usuario
-const getLastCartByUser = async (req, res) => {
+// ════════════════════════════════════════════════════════════════════════════════
+// GET /cart/user/:userId — historial de pedidos de un usuario
+// ════════════════════════════════════════════════════════════════════════════════
+const getCartsByUser = async (req, res) => {
   try {
     const { userId } = req.params;
 
-    if (req.user._id.toString() !== userId && !req.user.isAdmin && !req.user.isSecretaria) {
-      return res.status(403).json({ message: "No tienes permisos para ver este carrito" });
+    if (req.user._id.toString() !== userId && !req.user.isAtLeast('moderador')) {
+      return res.status(403).json({ error: 'No autorizado' });
     }
 
-    const lastCart = await Cart.findOne({ userId })
-      .sort({ createdAt: -1 })
-      .populate("items.productId")
-      .populate("userId", "name");
+    const carts = await populateCart(
+      Cart.find({ userId }).sort({ createdAt: -1 })
+    );
 
-    if (!lastCart) return res.status(404).json({ message: "El usuario no tiene carritos" });
-
-    // ✅ Limpiar items huérfanos antes de devolver
-    const hadOrphans = lastCart.items.some(item => item.productId === null);
-    if (hadOrphans) {
-      lastCart.items = lastCart.items.filter(item => item.productId !== null);
-      await lastCart.save();
-    }
-
-    res.status(200).json(lastCart);
+    res.json(carts);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error('getCartsByUser:', err);
+    res.status(500).json({ error: 'Error al obtener carritos del usuario' });
   }
 };
 
-// 👉 Agregar un producto al carrito
+// ════════════════════════════════════════════════════════════════════════════════
+// GET /cart/user/:userId/active — carrito activo (inicializado) del usuario
+// ════════════════════════════════════════════════════════════════════════════════
+const getActiveCart = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (req.user._id.toString() !== userId && !req.user.isAtLeast('moderador')) {
+      return res.status(403).json({ error: 'No autorizado' });
+    }
+
+    let cart = await populateCart(
+      Cart.findOne({ userId, status: 'inicializado' }).sort({ updatedAt: -1 })
+    );
+
+    if (!cart) return res.json(null); // sin carrito activo — el frontend lo maneja
+
+    // Limpiar items huérfanos (producto eliminado)
+    const before = cart.items.length;
+    cart.items = cart.items.filter((item) => item.productId !== null);
+    if (cart.items.length !== before) {
+      cart.recalculateTotal();
+      await cart.save();
+    }
+
+    res.json(cart);
+  } catch (err) {
+    console.error('getActiveCart:', err);
+    res.status(500).json({ error: 'Error al obtener el carrito activo' });
+  }
+};
+
+// ════════════════════════════════════════════════════════════════════════════════
+// GET /cart/:cartId — un carrito por ID
+// ════════════════════════════════════════════════════════════════════════════════
+const getCartById = async (req, res) => {
+  try {
+    const cart = await populateCart(Cart.findById(req.params.cartId));
+    if (!cart) return res.status(404).json({ error: 'Carrito no encontrado' });
+
+    if (!canAccessCart(req, cart)) {
+      return res.status(403).json({ error: 'No autorizado' });
+    }
+
+    res.json(cart);
+  } catch (err) {
+    console.error('getCartById:', err);
+    res.status(500).json({ error: 'Error al obtener el carrito' });
+  }
+};
+
+// ════════════════════════════════════════════════════════════════════════════════
+// POST /cart — agregar/actualizar ítem en carrito activo
+// Crea el carrito si no existe. No requiere registro obligatorio.
+// ════════════════════════════════════════════════════════════════════════════════
 const addToCart = async (req, res) => {
   try {
-    const { userId, items, paymentMethod, deliveryMethod, shippingAddress } = req.body;
+    const { productId, quantity = 1 } = req.body;
+    const userId = req.user._id;
 
-    if (req.user._id.toString() !== userId && !req.user.isAdmin && !req.user.isSecretaria) {
-      return res.status(403).json({ message: "No puedes agregar productos al carrito de otro usuario" });
-    }
+    if (!productId) return res.status(400).json({ error: 'productId es requerido' });
+    if (quantity < 1) return res.status(400).json({ error: 'La cantidad mínima es 1' });
 
-    if (!userId || !items || items.length === 0) {
-      return res.status(400).json({ message: "Faltan datos del carrito" });
-    }
-
-    const lastCart = await Cart.findOne({ userId }).sort({ createdAt: -1 });
-
-    let totalAmount = 0;
-    for (const item of items) {
-      const product = await Product.findById(item.productId);
-      if (!product) {
-        return res.status(404).json({ message: `Producto no encontrado: ${item.productId}` });
-      }
-      if (item.quantity > product.stock) {
-        return res.status(400).json({ message: `Stock insuficiente para ${product.title}` });
-      }
-      totalAmount += product.price * item.quantity;
-    }
-
-    // ✅ Crear nuevo carrito si no hay ninguno O si el último ya fue procesado
-    // "inicializado" es el ÚNICO estado donde se puede seguir agregando productos
-    const estadosQueCierranCarrito = ["pagado", "pendiente", "preparacion", "entregado", "cancelado"];
-    
-    if (!lastCart || estadosQueCierranCarrito.includes(lastCart.status)) {
-      const newCart = new Cart({
-        userId,
-        items,
-        paymentMethod: paymentMethod || "efectivo",
-        deliveryMethod: deliveryMethod || "retiro",
-        shippingAddress: shippingAddress || {
-          name: "Usuario Nuevo",
-          address: "Sin dirección",
-          phone: "0000000000"
-        },
-        totalAmount,
-        status: "inicializado"
+    // Verificar producto
+    const product = await Product.findById(productId);
+    if (!product) return res.status(404).json({ error: 'Producto no encontrado' });
+    if (!product.isActive) return res.status(400).json({ error: 'Producto no disponible' });
+    if (!product.hasEnoughStock(quantity)) {
+      return res.status(400).json({
+        error: `Stock insuficiente. Disponible: ${product.stock}`,
       });
-
-      await newCart.save();
-      return res.status(201).json(newCart);
     }
 
-    // Solo llegamos acá si el carrito está en "inicializado"
-    // ✅ Limpiar items huérfanos antes de modificar
-    lastCart.items = lastCart.items.filter(item => item.productId !== null);
+    // Buscar carrito activo o crear uno nuevo
+    let cart = await Cart.findOne({ userId, status: 'inicializado' });
 
-    for (const item of items) {
-      const index = lastCart.items.findIndex(i => i.productId.toString() === item.productId);
-      if (index !== -1) {
-        lastCart.items[index].quantity += item.quantity;
-      } else {
-        lastCart.items.push(item);
+    if (!cart) {
+      cart = new Cart({ userId, items: [], totalAmount: 0 });
+    }
+
+    // Cancelar TTL de abandonado si el usuario volvió
+    if (cart.expiresAt) {
+      cart.expiresAt = null;
+      cart.abandonedEmailSent = false;
+    }
+
+    // Agregar o sumar cantidad
+    const existingIndex = cart.items.findIndex(
+      (i) => i.productId.toString() === productId
+    );
+
+    if (existingIndex !== -1) {
+      const newQty = cart.items[existingIndex].quantity + Number(quantity);
+      if (!product.hasEnoughStock(newQty)) {
+        return res.status(400).json({
+          error: `Stock insuficiente. Disponible: ${product.stock}, en carrito: ${cart.items[existingIndex].quantity}`,
+        });
       }
+      cart.items[existingIndex].quantity = newQty;
+      cart.items[existingIndex].priceAtPurchase = product.price; // actualizar precio
+    } else {
+      cart.items.push({
+        productId,
+        quantity: Number(quantity),
+        priceAtPurchase: product.price,
+      });
     }
 
-    // ✅ Recalcular total limpio
-    let newTotal = 0;
-    for (const item of lastCart.items) {
-      const product = await Product.findById(item.productId);
-      if (product) newTotal += product.price * item.quantity;
-    }
-    lastCart.totalAmount = newTotal;
+    cart.recalculateTotal();
+    await cart.save();
 
-    await lastCart.save();
-    return res.status(200).json(lastCart);
-  } catch (err) {
-    console.error("Error en addToCart:", err);
-    res.status(500).json({ message: err.message });
-  }
-};
-
-// 👉 Obtener el carrito de un usuario
-const getCartByUser = async (req, res) => {
-  try {
-    const { userId } = req.params;
-
-    if (req.user._id.toString() !== userId && !req.user.isAdmin && !req.user.isSecretaria) {
-      return res.status(403).json({ message: "No tienes permisos para ver este carrito" });
-    }
-
-    const cart = await Cart.find({ userId })
-      .populate("items.productId")
-      .populate("userId", "name");
-
+    await cart.populate('items.productId', 'title image price isActive');
     res.status(200).json(cart);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error('addToCart:', err);
+    res.status(500).json({ error: 'Error al agregar al carrito', details: err.message });
   }
 };
 
-// 👉 Actualizar productos en el carrito
-const updateCartItems = async (req, res) => {
+// ════════════════════════════════════════════════════════════════════════════════
+// PATCH /cart/:cartId/item — modificar cantidad o eliminar ítem
+// action: 'add' | 'subtract' | 'remove' | 'set'
+// ════════════════════════════════════════════════════════════════════════════════
+const updateCartItem = async (req, res) => {
   try {
     const { cartId } = req.params;
-    const { productId, action } = req.body;
+    const { productId, action, quantity } = req.body;
+
+    if (!productId || !action) {
+      return res.status(400).json({ error: 'productId y action son requeridos' });
+    }
 
     const cart = await Cart.findById(cartId);
-    if (!cart) return res.status(404).json({ message: "Carrito no encontrado" });
+    if (!cart) return res.status(404).json({ error: 'Carrito no encontrado' });
 
-    if (req.user._id.toString() !== cart.userId.toString() && !req.user.isAdmin && !req.user.isSecretaria) {
-      return res.status(403).json({ message: "No tienes permisos para modificar este carrito" });
+    if (!canAccessCart(req, cart)) return res.status(403).json({ error: 'No autorizado' });
+    if (!cart.isEditable()) {
+      return res.status(400).json({ error: `No se puede modificar un carrito en estado "${cart.status}"` });
     }
 
-    // ✅ Bloquear modificaciones en carritos ya procesados
-    const estadosBloqueados = ["pendiente", "pagado", "preparacion", "entregado", "cancelado"];
-    if (estadosBloqueados.includes(cart.status)) {
-      return res.status(400).json({ 
-        message: `No se puede modificar un carrito en estado "${cart.status}"` 
-      });
+    const itemIndex = cart.items.findIndex(
+      (i) => i.productId.toString() === productId
+    );
+
+    if (itemIndex === -1) {
+      return res.status(404).json({ error: 'Ítem no encontrado en el carrito' });
     }
 
-    // ✅ Limpiar items huérfanos antes de operar
-    cart.items = cart.items.filter(item => item.productId !== null);
+    const product = await Product.findById(productId);
+    if (!product) return res.status(404).json({ error: 'Producto no encontrado' });
 
-    const itemIndex = cart.items.findIndex(item => item.productId.toString() === productId);
+    const item = cart.items[itemIndex];
 
-    if (itemIndex === -1 && action === 'add') {
-      const product = await Product.findById(productId);
-      if (!product) return res.status(404).json({ message: "Producto no encontrado" });
-      cart.items.push({ productId, quantity: 1 });
-
-    } else if (itemIndex !== -1) {
-      const item = cart.items[itemIndex];
-
-      if (action === 'add') {
-        // ✅ Validar stock antes de agregar
-        const product = await Product.findById(productId);
-        if (!product) return res.status(404).json({ message: "Producto no encontrado" });
-        if (item.quantity + 1 > product.stock) {
-          return res.status(400).json({ message: `Stock insuficiente para ${product.title}` });
-        }
-        item.quantity += 1;
-
-      } else if (action === 'subtract') {
-        item.quantity -= 1;
-        if (item.quantity <= 0) cart.items.splice(itemIndex, 1);
-
-      } else if (action === 'remove') {
-        cart.items.splice(itemIndex, 1);
+    if (action === 'add') {
+      const newQty = item.quantity + 1;
+      if (!product.hasEnoughStock(newQty)) {
+        return res.status(400).json({ error: `Stock insuficiente. Disponible: ${product.stock}` });
       }
+      item.quantity = newQty;
+
+    } else if (action === 'subtract') {
+      item.quantity -= 1;
+      if (item.quantity <= 0) cart.items.splice(itemIndex, 1);
+
+    } else if (action === 'remove') {
+      cart.items.splice(itemIndex, 1);
+
+    } else if (action === 'set') {
+      if (!quantity || quantity < 1) {
+        return res.status(400).json({ error: 'quantity debe ser >= 1 para action "set"' });
+      }
+      if (!product.hasEnoughStock(Number(quantity))) {
+        return res.status(400).json({ error: `Stock insuficiente. Disponible: ${product.stock}` });
+      }
+      item.quantity = Number(quantity);
+
     } else {
-      return res.status(400).json({ message: "Producto no existe en el carrito" });
+      return res.status(400).json({ error: 'action inválida. Usar: add, subtract, remove, set' });
     }
 
-    // ✅ Recalcular total
-    let totalAmount = 0;
-    for (const item of cart.items) {
-      const product = await Product.findById(item.productId);
-      if (product) totalAmount += item.quantity * product.price;
-    }
-    cart.totalAmount = totalAmount;
-
+    cart.recalculateTotal();
     await cart.save();
-    res.status(200).json({ message: "Carrito actualizado", cart });
 
+    await cart.populate('items.productId', 'title image price isActive');
+    res.json({ message: 'Carrito actualizado', cart });
   } catch (err) {
-    console.error("Error en updateCartItems:", err);
-    res.status(500).json({ message: err.message });
+    console.error('updateCartItem:', err);
+    res.status(500).json({ error: 'Error al actualizar el carrito', details: err.message });
   }
 };
 
-// 👉 Confirmar compra (checkout)
+// ════════════════════════════════════════════════════════════════════════════════
+// POST /cart/:cartId/checkout — confirmar pedido
+// ════════════════════════════════════════════════════════════════════════════════
 const checkoutCart = async (req, res) => {
   try {
     const { cartId } = req.params;
-    const { paymentMethod, deliveryMethod, shippingAddress, customerInfo, receiptUrl } = req.body;
+    const { paymentMethod, deliveryMethod, shippingAddress, receiptUrl } = req.body;
 
-    const cart = await Cart.findById(cartId).populate("items.productId");
-    if (!cart) return res.status(404).json({ message: "Carrito no encontrado" });
-
-    if (req.user._id.toString() !== cart.userId.toString() && !req.user.isAdmin && !req.user.isSecretaria) {
-      return res.status(403).json({ message: "No puedes confirmar la compra de otro usuario" });
+    // Validaciones básicas
+    if (!paymentMethod || !['transferencia', 'mercadopago'].includes(paymentMethod)) {
+      return res.status(400).json({ error: 'paymentMethod debe ser "transferencia" o "mercadopago"' });
+    }
+    if (!deliveryMethod || !['retiro', 'envio'].includes(deliveryMethod)) {
+      return res.status(400).json({ error: 'deliveryMethod debe ser "retiro" o "envio"' });
+    }
+    if (deliveryMethod === 'envio') {
+      const { name, address, city, province, postalCode, phone } = shippingAddress || {};
+      if (!name || !address || !city || !province || !postalCode || !phone) {
+        return res.status(400).json({ error: 'Todos los campos de dirección son obligatorios para envío' });
+      }
     }
 
-    if (["pagado", "preparacion", "entregado", "cancelado"].includes(cart.status)) {
-      return res.status(400).json({ message: "Carrito ya procesado" });
+    const cart = await Cart.findById(cartId).populate('items.productId');
+    if (!cart) return res.status(404).json({ error: 'Carrito no encontrado' });
+
+    if (!canAccessCart(req, cart)) return res.status(403).json({ error: 'No autorizado' });
+    if (!cart.canCheckout()) {
+      return res.status(400).json({ error: `No se puede hacer checkout de un carrito en estado "${cart.status}"` });
     }
 
-    // ✅ Filtrar items huérfanos antes del checkout
-    cart.items = cart.items.filter(item => item.productId !== null);
+    // Limpiar huérfanos
+    cart.items = cart.items.filter((item) => item.productId !== null);
+    if (cart.items.length === 0) {
+      return res.status(400).json({ error: 'El carrito no tiene productos válidos' });
+    }
 
+    // Verificar stock de todos los items antes de descontarlo
     for (const item of cart.items) {
       const product = item.productId;
-      if (!product) continue;
-      if (item.quantity > product.stock) {
+      if (!product.isActive) {
+        return res.status(400).json({ error: `El producto "${product.title}" ya no está disponible` });
+      }
+      if (!product.hasEnoughStock(item.quantity)) {
         return res.status(400).json({
-          message: `Stock insuficiente para ${product.title}. Disponible: ${product.stock}, solicitado: ${item.quantity}`
+          error: `Stock insuficiente para "${product.title}". Disponible: ${product.stock}, solicitado: ${item.quantity}`,
         });
       }
     }
 
+    // Descontar stock
     for (const item of cart.items) {
-      const product = item.productId;
-      if (!product) continue;
-      product.stock -= item.quantity;
-      await product.save();
+      await item.productId.reduceStock(item.quantity);
     }
 
-    cart.paymentMethod = paymentMethod;
+    // Actualizar carrito
+    cart.paymentMethod  = paymentMethod;
     cart.deliveryMethod = deliveryMethod;
-    cart.shippingAddress = {
-      name: customerInfo?.name || shippingAddress?.name || cart.shippingAddress.name,
-      address: customerInfo?.address || shippingAddress?.address || cart.shippingAddress.address,
-      phone: customerInfo?.phone || shippingAddress?.phone || cart.shippingAddress.phone,
-    };
+    cart.shippingAddress = deliveryMethod === 'envio' ? shippingAddress : null;
+    cart.expiresAt      = null;  // cancelar TTL de abandonado
+    cart.abandonedEmailSent = false;
 
     if (receiptUrl) cart.receiptUrl = receiptUrl;
 
-    cart.status = paymentMethod === 'transferencia' ? 'pendiente' : 'pagado';
+    // Estado inicial según método de pago
+    // mercadopago → el webhook lo pasa a 'pagado' automáticamente
+    // transferencia → queda en 'pendiente' hasta que admin confirme
+    cart.status = paymentMethod === 'mercadopago' ? 'pagado' : 'pendiente';
 
+    // Recalcular total final con priceAtPurchase (snapshot)
+    cart.recalculateTotal();
     await cart.save();
 
+    // Email de confirmación
     try {
       const user = await User.findById(cart.userId);
       await sendPedidoConfirmadoEmail(cart, user);
-    } catch (emailError) {
-      console.error('❌ Error enviando email de confirmación:', emailError);
+    } catch (emailErr) {
+      console.error('Error enviando email de confirmación:', emailErr.message);
     }
 
-    return res.status(200).json(cart);
+    await cart.populate('items.productId', 'title image price');
+    res.status(200).json(cart);
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: "Error del servidor al procesar checkout", error: err.message });
+    console.error('checkoutCart:', err);
+    res.status(500).json({ error: 'Error al procesar el checkout', details: err.message });
   }
 };
 
-// 👉 Actualizar estado del carrito
+// ════════════════════════════════════════════════════════════════════════════════
+// PATCH /cart/:cartId/status — cambiar estado (moderador+)
+// ════════════════════════════════════════════════════════════════════════════════
 const updateCartStatus = async (req, res) => {
-  const { cartId } = req.params;
-  const { status } = req.body;
-
-  const validStatuses = ["pendiente", "pagado", "preparacion", "cancelado", "entregado"];
-  if (!validStatuses.includes(status)) {
-    return res.status(400).json({ message: "Estado inválido" });
-  }
-
   try {
-    const cart = await Cart.findById(cartId).populate('userId').populate('items.productId');
-    if (!cart) return res.status(404).json({ message: "Carrito no encontrado" });
+    const { cartId } = req.params;
+    const { status } = req.body;
 
-    if (status === "preparacion" && !["pagado", "pendiente"].includes(cart.status)) {
-      return res.status(400).json({ message: "Solo se puede pasar a preparación si el pedido está pagado o pendiente" });
+    const validStatuses = ['pendiente', 'pagado', 'preparacion', 'en_camino', 'entregado', 'cancelado'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: `Estado inválido. Válidos: ${validStatuses.join(', ')}` });
     }
 
-    // ✅ Evitar cancelar algo que ya fue entregado
-    if (status === "cancelado" && cart.status === "entregado") {
-      return res.status(400).json({ message: "No se puede cancelar un pedido ya entregado" });
+    const cart = await Cart.findById(cartId)
+      .populate('items.productId')
+      .populate('userId', 'name email');
+
+    if (!cart) return res.status(404).json({ error: 'Carrito no encontrado' });
+
+    const prev = cart.status;
+
+    // Validaciones de flujo
+    if (prev === 'entregado') {
+      return res.status(400).json({ error: 'No se puede modificar un pedido ya entregado' });
+    }
+    if (prev === 'cancelado') {
+      return res.status(400).json({ error: 'No se puede modificar un pedido cancelado' });
+    }
+    if (status === 'en_camino' && cart.deliveryMethod !== 'envio') {
+      return res.status(400).json({ error: 'El estado "en_camino" solo aplica a pedidos con envío' });
+    }
+    if (status === 'preparacion' && !['pagado', 'pendiente'].includes(prev)) {
+      return res.status(400).json({ error: 'Solo se puede pasar a preparación desde "pagado" o "pendiente"' });
     }
 
-    const estadoAnterior = cart.status;
+    const prevStatus = cart.status;
     cart.status = status;
     await cart.save();
 
-    // ✅ Restaurar stock al cancelar
-    // Solo si el carrito estaba en un estado donde el stock ya fue descontado
-    // (pendiente, pagado, preparacion)
-    const estadosConStockDescontado = ["pendiente", "pagado", "preparacion"];
-    if (status === "cancelado" && estadosConStockDescontado.includes(estadoAnterior)) {
-      console.log(`🔄 Restaurando stock por cancelación del carrito ${cartId}`);
-      
+    // Restaurar stock si se cancela
+    const statusesWithReducedStock = ['pendiente', 'pagado', 'preparacion', 'en_camino'];
+    if (status === 'cancelado' && statusesWithReducedStock.includes(prevStatus)) {
       for (const item of cart.items) {
-        const product = item.productId; // ya está populado
+        const product = item.productId;
         if (!product) continue;
-
         product.stock += item.quantity;
-
-        // ✅ Reactivar producto si quedó inactivo por falta de stock
-        if (!product.isActive && product.stock > 0) {
-          product.isActive = true;
-        }
-
+        if (!product.isActive && product.stock > 0) product.isActive = true;
         await product.save();
         console.log(`✅ Stock restaurado: ${product.title} +${item.quantity} (ahora: ${product.stock})`);
       }
     }
 
-    const updatedCart = await Cart.findById(cartId)
-      .populate("items.productId")
-      .populate("userId", "name email");
-
+    // Emails según nuevo estado
     try {
-      const user = await User.findById(cart.userId._id || cart.userId);
-      if (status !== estadoAnterior) {
-        switch (status) {
-          case 'pendiente':
-          case 'pagado':
-            await sendPedidoConfirmadoEmail(updatedCart, user);
-            break;
-          case 'preparacion':
-            await sendEnPreparacionEmail(updatedCart, user);
-            break;
-          case 'entregado':
-            await sendPedidoEntregadoEmail(updatedCart, user);
-            break;
-        }
-        if (status === 'pagado' && estadoAnterior === 'pendiente') {
-          await sendPagoConfirmadoEmail(updatedCart, user);
+      const user = cart.userId;
+      if (status !== prevStatus) {
+        if (status === 'pagado' && prevStatus === 'pendiente') {
+          await sendPagoConfirmadoEmail(cart, user);
+        } else if (status === 'preparacion') {
+          await sendEnPreparacionEmail(cart, user);
+        } else if (status === 'en_camino') {
+          await sendEnCaminoEmail(cart, user);
+        } else if (status === 'entregado') {
+          await sendPedidoEntregadoEmail(cart, user);
         }
       }
-    } catch (emailError) {
-      console.error('❌ Error enviando email:', emailError);
+    } catch (emailErr) {
+      console.error('Error enviando email de estado:', emailErr.message);
     }
 
-    res.status(200).json(updatedCart);
-  } catch (error) {
-    console.error('Error en updateCartStatus:', error);
-    res.status(500).json({ message: "Error del servidor", error: error.message });
+    res.json(cart);
+  } catch (err) {
+    console.error('updateCartStatus:', err);
+    res.status(500).json({ error: 'Error al actualizar estado', details: err.message });
   }
 };
 
-// 👉 Rating desde carrito
-const addCartProductRating = async (req, res) => {
-  const { cartId, productId } = req.params;
-  const { stars, comment } = req.body;
-
+// ════════════════════════════════════════════════════════════════════════════════
+// PUT /cart/:cartId/receipt — subir comprobante de transferencia
+// ════════════════════════════════════════════════════════════════════════════════
+const uploadReceipt = async (req, res) => {
   try {
+    const { cartId } = req.params;
+    const { receiptUrl } = req.body;
+
+    if (!receiptUrl) return res.status(400).json({ error: 'receiptUrl es requerido' });
+
+    const cart = await Cart.findById(cartId);
+    if (!cart) return res.status(404).json({ error: 'Carrito no encontrado' });
+
+    if (!canAccessCart(req, cart)) return res.status(403).json({ error: 'No autorizado' });
+
+    if (cart.paymentMethod !== 'transferencia') {
+      return res.status(400).json({ error: 'Este pedido no es por transferencia' });
+    }
+    if (!['pendiente'].includes(cart.status)) {
+      return res.status(400).json({ error: 'Solo se puede subir comprobante en pedidos pendientes' });
+    }
+
+    cart.receiptUrl = receiptUrl;
+    await cart.save();
+
+    res.json({ message: 'Comprobante guardado correctamente', cart });
+  } catch (err) {
+    console.error('uploadReceipt:', err);
+    res.status(500).json({ error: 'Error al guardar comprobante' });
+  }
+};
+
+// ════════════════════════════════════════════════════════════════════════════════
+// POST /cart/:cartId/rate/:productId — calificar producto post-entrega
+// ════════════════════════════════════════════════════════════════════════════════
+const addCartProductRating = async (req, res) => {
+  try {
+    const { cartId, productId } = req.params;
+    const { stars, comment } = req.body;
+
+    if (!stars || stars < 1 || stars > 5) {
+      return res.status(400).json({ error: 'stars debe ser entre 1 y 5' });
+    }
+
     const cart = await Cart.findById(cartId);
     const product = await Product.findById(productId);
 
-    if (!cart || !product) {
-      return res.status(404).json({ message: 'Producto o carrito no encontrado' });
-    }
+    if (!cart || !product) return res.status(404).json({ error: 'Carrito o producto no encontrado' });
 
-    if (req.user._id.toString() !== cart.userId.toString() && !req.user.isAdmin) {
-      return res.status(403).json({ message: 'No autorizado a calificar este carrito' });
+    if (req.user._id.toString() !== cart.userId.toString()) {
+      return res.status(403).json({ error: 'Solo el comprador puede calificar' });
     }
-
     if (cart.status !== 'entregado') {
-      return res.status(400).json({ message: 'Solo puedes calificar productos de carritos entregados' });
+      return res.status(400).json({ error: 'Solo podés calificar pedidos entregados' });
     }
 
-    await product.addCartRating(cartId, stars, comment);
+    const inCart = cart.items.some((i) => i.productId.toString() === productId);
+    if (!inCart) {
+      return res.status(400).json({ error: 'Ese producto no está en este pedido' });
+    }
 
-    const existingIndex = cart.ratings.findIndex(r => r.productId.toString() === productId);
+    // Guardar rating en el producto
+    await product.addCartRating(cartId, Number(stars), comment);
+
+    // Guardar rating en el carrito
+    const existingIndex = cart.ratings.findIndex(
+      (r) => r.productId.toString() === productId
+    );
     if (existingIndex !== -1) {
-      cart.ratings[existingIndex] = { productId, stars, comment, ratedAt: new Date() };
+      cart.ratings[existingIndex] = { productId, stars: Number(stars), comment, ratedAt: new Date() };
     } else {
-      cart.ratings.push({ productId, stars, comment, ratedAt: new Date() });
+      cart.ratings.push({ productId, stars: Number(stars), comment });
     }
     await cart.save();
 
-    res.status(200).json({
-      success: true,
+    res.json({
       message: 'Calificación guardada',
-      productUpdate: {
-        rating: product.rating,
-        numReviews: product.numReviews
-      }
+      productRating: { rating: product.rating, numReviews: product.numReviews },
     });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Error al calificar', error: error.message });
+  } catch (err) {
+    console.error('addCartProductRating:', err);
+    res.status(500).json({ error: 'Error al calificar', details: err.message });
   }
 };
 
 module.exports = {
   getAllCarts,
-  getLastCartByUser,
+  getCartsByUser,
+  getActiveCart,
+  getCartById,
   addToCart,
-  getCartByUser,
-  updateCartItems,
+  updateCartItem,
   checkoutCart,
   updateCartStatus,
-  addCartProductRating
+  uploadReceipt,
+  addCartProductRating,
 };

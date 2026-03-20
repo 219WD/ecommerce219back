@@ -1,894 +1,326 @@
 const transporter = require('../config/nodemailer');
 
-const sendPartnerRequestEmail = async (user) => {
+// ─── Helper: nombre del negocio desde env o fallback ─────────────────────────
+const SHOP_NAME = process.env.SHOP_NAME || 'Ecommerce';
+const FRONTEND  = process.env.FRONTEND_URL || 'http://localhost:5173';
+const FROM      = `"${SHOP_NAME}" <${process.env.EMAIL_USER}>`;
+
+// ─── Helper: wrapper de envío con log ────────────────────────────────────────
+const send = async (mailOptions) => {
   try {
-    const mailOptions = {
-      from: `"Jamrock Club" <${process.env.EMAIL_USER}>`,
-      to: user.email,
-      subject: '✅ Solicitud de Partner Recibida - Jamrock Club',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
-          <div style="text-align: center; margin-bottom: 30px;">
-            <h2 style="color: #333; margin-bottom: 10px;">¡Solicitud Recibida!</h2>
-            <p style="font-size: 16px; color: #666;">
-              Hola <strong>${user.name}</strong>, hemos recibido tu solicitud para convertirte en Partner.
-            </p>
-          </div>
-          
-          <div style="background-color: #f9f9f9; padding: 20px; border-radius: 6px; margin-bottom: 20px;">
-            <h3 style="color: #333; margin-top: 0; margin-bottom: 15px;">📋 Detalles de la Solicitud</h3>
-            
-            <table style="width: 100%; border-collapse: collapse;">
-              <tr>
-                <td style="padding: 8px 0; color: #666; width: 120px;"><strong>Solicitante:</strong></td>
-                <td style="padding: 8px 0;">${user.name}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Email:</strong></td>
-                <td style="padding: 8px 0;">${user.email}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>ID de Solicitud:</strong></td>
-                <td style="padding: 8px 0;">${user._id}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Fecha:</strong></td>
-                <td style="padding: 8px 0;">${new Date().toLocaleDateString('es-AR')}</td>
-              </tr>
-            </table>
-          </div>
+    const info = await transporter.sendMail(mailOptions);
+    console.log(`✅ Email enviado a ${mailOptions.to} — ${info.messageId}`);
+    return { success: true, messageId: info.messageId };
+  } catch (err) {
+    console.error(`❌ Error enviando email a ${mailOptions.to}:`, err.message);
+    return { success: false, error: err.message };
+  }
+};
 
-          <div style="background-color: #e8f4fd; padding: 15px; border-radius: 6px; margin-bottom: 20px;">
-            <h4 style="color: #1565c0; margin-top: 0;">⏳ Proceso de Revisión</h4>
-            <p style="margin: 5px 0; color: #1565c0;">
-              • Tu solicitud está ahora en revisión<br>
-              • Analizaremos tu perfil y requisitos<br>
-              • Te notificaremos por email una vez procesada<br>
-              • Tiempo estimado: 2-5 días hábiles
-            </p>
-          </div>
+// ─── Helper: estilos base ─────────────────────────────────────────────────────
+const baseStyle = `font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;`;
+const btnStyle  = (color = '#4CAF50') => `background-color: ${color}; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;`;
+const footer    = `<div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0; text-align: center; color: #666; font-size: 14px;"><p>¡Gracias por elegirnos!<br><strong>El equipo de ${SHOP_NAME}</strong></p></div>`;
 
-          <div style="text-align: center; margin-top: 30px;">
-            <a href="${process.env.FRONTEND_URL || 'https://tujamrock.com'}" 
-               style="background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
-               Ir a Jamrock Club
-            </a>
-          </div>
+// ─── Helper: resumen del pedido ───────────────────────────────────────────────
+const orderSummaryHTML = (cart) => `
+  <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">
+    <tr>
+      <td style="padding: 8px 0; color: #666; width: 150px;"><strong>N° de Pedido:</strong></td>
+      <td style="padding: 8px 0; font-size: 12px;">${cart._id}</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px 0; color: #666;"><strong>Total:</strong></td>
+      <td style="padding: 8px 0; font-weight: bold;">$${cart.totalAmount?.toLocaleString('es-AR')}</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px 0; color: #666;"><strong>Pago:</strong></td>
+      <td style="padding: 8px 0; text-transform: capitalize;">${cart.paymentMethod}</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px 0; color: #666;"><strong>Entrega:</strong></td>
+      <td style="padding: 8px 0; text-transform: capitalize;">${cart.deliveryMethod}</td>
+    </tr>
+  </table>
+  ${cart.deliveryMethod === 'envio' && cart.shippingAddress ? `
+    <div style="background: #e8f4fd; padding: 15px; border-radius: 6px; margin-top: 10px;">
+      <strong>🚚 Dirección de envío</strong><br>
+      ${cart.shippingAddress.name}<br>
+      ${cart.shippingAddress.address}${cart.shippingAddress.apartment ? `, ${cart.shippingAddress.apartment}` : ''}<br>
+      ${cart.shippingAddress.city}, ${cart.shippingAddress.province} (${cart.shippingAddress.postalCode})<br>
+      Tel: ${cart.shippingAddress.phone}
+      ${cart.shippingAddress.extraNotes ? `<br><em>${cart.shippingAddress.extraNotes}</em>` : ''}
+    </div>
+  ` : `
+    <div style="background: #e8f5e8; padding: 15px; border-radius: 6px; margin-top: 10px;">
+      <strong>🏪 Retiro en local</strong><br>
+      Te avisamos cuando esté listo para retirar.
+    </div>
+  `}
+`;
 
-          <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0; text-align: center; color: #666; font-size: 14px;">
-            <p>Si tienes alguna pregunta, no dudes en contactarnos.</p>
-            <p>¡Saludos cordiales!<br><strong>El equipo de Jamrock Club</strong></p>
-          </div>
+// ════════════════════════════════════════════════════════════════════════════════
+// 1. PEDIDO CONFIRMADO (checkout exitoso)
+// ════════════════════════════════════════════════════════════════════════════════
+const sendPedidoConfirmadoEmail = async (cart, user) => {
+  const isPendingTransfer = cart.paymentMethod === 'transferencia';
+
+  return send({
+    from: FROM,
+    to: user.email,
+    subject: `✅ Pedido recibido #${cart._id} — ${SHOP_NAME}`,
+    html: `
+      <div style="${baseStyle}">
+        <h2 style="color: #333;">¡Pedido recibido, ${user.name}!</h2>
+        <p style="color: #666;">
+          ${isPendingTransfer
+            ? 'Recibimos tu pedido. Una vez que confirmes el pago por transferencia, comenzaremos a prepararlo.'
+            : 'Tu pago fue procesado. ¡Ya estamos preparando tu pedido!'
+          }
+        </p>
+        <div style="background: #f9f9f9; padding: 20px; border-radius: 6px; margin: 20px 0;">
+          <h3 style="margin-top: 0;">📦 Resumen</h3>
+          ${orderSummaryHTML(cart)}
         </div>
+        ${isPendingTransfer ? `
+          <div style="background: #fff3cd; padding: 15px; border-radius: 6px; margin-bottom: 20px;">
+            <strong>⚠️ Próximo paso</strong><br>
+            Realizá la transferencia y subí el comprobante desde tu perfil para agilizar la confirmación.
+          </div>
+        ` : ''}
+        <div style="text-align: center; margin-top: 25px;">
+          <a href="${FRONTEND}/mis-pedidos" style="${btnStyle()}">Ver mis pedidos</a>
+        </div>
+        ${footer}
+      </div>
+    `,
+  });
+};
+
+// ════════════════════════════════════════════════════════════════════════════════
+// 2. PAGO CONFIRMADO (admin confirma transferencia)
+// ════════════════════════════════════════════════════════════════════════════════
+const sendPagoConfirmadoEmail = async (cart, user) => {
+  return send({
+    from: FROM,
+    to: user.email,
+    subject: `💳 Pago confirmado #${cart._id} — ${SHOP_NAME}`,
+    html: `
+      <div style="${baseStyle}">
+        <h2 style="color: #333;">¡Pago confirmado, ${user.name}!</h2>
+        <p style="color: #666;">Verificamos tu transferencia. Tu pedido pasa a preparación.</p>
+        <div style="background: #f9f9f9; padding: 20px; border-radius: 6px; margin: 20px 0;">
+          ${orderSummaryHTML(cart)}
+        </div>
+        <div style="text-align: center; margin-top: 25px;">
+          <a href="${FRONTEND}/mis-pedidos" style="${btnStyle()}">Seguir mi pedido</a>
+        </div>
+        ${footer}
+      </div>
+    `,
+  });
+};
+
+// ════════════════════════════════════════════════════════════════════════════════
+// 3. EN PREPARACIÓN
+// ════════════════════════════════════════════════════════════════════════════════
+const sendEnPreparacionEmail = async (cart, user) => {
+  return send({
+    from: FROM,
+    to: user.email,
+    subject: `👨‍🍳 Tu pedido está en preparación #${cart._id} — ${SHOP_NAME}`,
+    html: `
+      <div style="${baseStyle}">
+        <h2 style="color: #333;">¡Estamos preparando tu pedido, ${user.name}!</h2>
+        <p style="color: #666;">
+          ${cart.deliveryMethod === 'envio'
+            ? 'Pronto lo despacharemos. Te notificamos cuando salga.'
+            : 'Te avisamos cuando esté listo para que pases a retirarlo.'
+          }
+        </p>
+        <div style="background: #f9f9f9; padding: 20px; border-radius: 6px; margin: 20px 0;">
+          ${orderSummaryHTML(cart)}
+        </div>
+        <div style="text-align: center; margin-top: 25px;">
+          <a href="${FRONTEND}/mis-pedidos" style="${btnStyle('#ff9800')}">Seguir mi pedido</a>
+        </div>
+        ${footer}
+      </div>
+    `,
+  });
+};
+
+// ════════════════════════════════════════════════════════════════════════════════
+// 4. EN CAMINO (solo envíos)
+// ════════════════════════════════════════════════════════════════════════════════
+const sendEnCaminoEmail = async (cart, user) => {
+  return send({
+    from: FROM,
+    to: user.email,
+    subject: `🚚 Tu pedido está en camino #${cart._id} — ${SHOP_NAME}`,
+    html: `
+      <div style="${baseStyle}">
+        <h2 style="color: #333;">¡Tu pedido está en camino, ${user.name}!</h2>
+        <p style="color: #666;">Tu paquete fue despachado y está en camino a tu domicilio.</p>
+        <div style="background: #f9f9f9; padding: 20px; border-radius: 6px; margin: 20px 0;">
+          ${orderSummaryHTML(cart)}
+        </div>
+        ${cart.shippingAddress ? `
+          <div style="background: #e8f4fd; padding: 15px; border-radius: 6px; margin-bottom: 20px;">
+            <strong>📍 Dirección de entrega</strong><br>
+            ${cart.shippingAddress.address}${cart.shippingAddress.apartment ? `, ${cart.shippingAddress.apartment}` : ''}<br>
+            ${cart.shippingAddress.city}, ${cart.shippingAddress.province}
+          </div>
+        ` : ''}
+        <div style="text-align: center; margin-top: 25px;">
+          <a href="${FRONTEND}/mis-pedidos" style="${btnStyle('#2196F3')}">Ver mi pedido</a>
+        </div>
+        ${footer}
+      </div>
+    `,
+  });
+};
+
+// ════════════════════════════════════════════════════════════════════════════════
+// 5. ENTREGADO
+// ════════════════════════════════════════════════════════════════════════════════
+const sendPedidoEntregadoEmail = async (cart, user) => {
+  return send({
+    from: FROM,
+    to: user.email,
+    subject: `🎉 Pedido entregado #${cart._id} — ${SHOP_NAME}`,
+    html: `
+      <div style="${baseStyle}">
+        <h2 style="color: #333;">¡Pedido entregado, ${user.name}!</h2>
+        <p style="color: #666;">
+          Tu pedido fue ${cart.deliveryMethod === 'envio' ? 'entregado' : 'retirado'} exitosamente.
+        </p>
+        <div style="background: #e8f5e8; padding: 15px; border-radius: 6px; margin: 20px 0;">
+          <strong>⭐ ¿Qué te pareció?</strong><br>
+          Tu opinión ayuda a otros compradores. ¡Calificá tus productos!
+        </div>
+        <div style="text-align: center; margin-top: 25px;">
+          <a href="${FRONTEND}/mis-pedidos" style="${btnStyle()}">Calificar productos</a>
+        </div>
+        ${footer}
+      </div>
+    `,
+  });
+};
+
+// ════════════════════════════════════════════════════════════════════════════════
+// 6. CARRITO ABANDONADO
+// ════════════════════════════════════════════════════════════════════════════════
+const sendCarritoAbandonadoEmail = async (cart, user) => {
+  const itemsHTML = cart.items
+    .filter((i) => i.productId)
+    .map(
+      (i) => `
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #eee;">
+            <img src="${i.productId.image}" alt="${i.productId.title}" style="width:50px; height:50px; object-fit:cover; border-radius:4px;" />
+          </td>
+          <td style="padding: 8px; border-bottom: 1px solid #eee;">${i.productId.title}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #eee; text-align:center;">${i.quantity}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #eee; text-align:right;">$${(i.priceAtPurchase * i.quantity).toLocaleString('es-AR')}</td>
+        </tr>
       `
-    };
+    )
+    .join('');
 
-    const info = await transporter.sendMail(mailOptions);
-    return { success: true, messageId: info.messageId };
-
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
+  return send({
+    from: FROM,
+    to: user.email,
+    subject: `🛒 ¿Olvidaste algo? Tu carrito te espera — ${SHOP_NAME}`,
+    html: `
+      <div style="${baseStyle}">
+        <h2 style="color: #333;">Hola ${user.name}, ¡dejaste productos en tu carrito!</h2>
+        <p style="color: #666;">Todavía están disponibles, pero el stock es limitado.</p>
+        <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+          <thead>
+            <tr style="background: #f5f5f5;">
+              <th style="padding: 8px; text-align: left;"></th>
+              <th style="padding: 8px; text-align: left;">Producto</th>
+              <th style="padding: 8px; text-align: center;">Cant.</th>
+              <th style="padding: 8px; text-align: right;">Subtotal</th>
+            </tr>
+          </thead>
+          <tbody>${itemsHTML}</tbody>
+        </table>
+        <p style="text-align: right; font-weight: bold; font-size: 18px;">
+          Total: $${cart.totalAmount?.toLocaleString('es-AR')}
+        </p>
+        <div style="text-align: center; margin-top: 25px;">
+          <a href="${FRONTEND}/carrito" style="${btnStyle()}">Completar mi compra</a>
+        </div>
+        <p style="color: #999; font-size: 12px; text-align: center; margin-top: 20px;">
+          Tu carrito se eliminará en 24 horas si no completás la compra.
+        </p>
+        ${footer}
+      </div>
+    `,
+  });
 };
 
-const sendPartnerStatusEmail = async (user, isApproved) => {
-  try {
-    const mailOptions = {
-      from: `"Jamrock Club" <${process.env.EMAIL_USER}>`,
-      to: user.email,
-      subject: isApproved
-        ? '🎉 ¡Felicidades! Eres ahora Partner oficial de Jamrock'
-        : 'ℹ️ Estado de Partner Actualizado - Jamrock Club',
-      html: isApproved
-        ? `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
-            <div style="text-align: center; margin-bottom: 30px;">
-              <h2 style="color: #333; margin-bottom: 10px;">¡Bienvenido a la Familia Jamrock!</h2>
-              <p style="font-size: 16px; color: #666;">
-                Hola <strong>${user.name}</strong>, nos complace informarte que tu solicitud ha sido <strong>aprobada</strong>.
-              </p>
-            </div>
-            
-            <div style="background-color: #f9f9f9; padding: 20px; border-radius: 6px; margin-bottom: 20px;">
-              <h3 style="color: #333; margin-top: 0; margin-bottom: 15px;">✅ Solicitud Aprobada</h3>
-              
-              <table style="width: 100%; border-collapse: collapse;">
-                <tr>
-                  <td style="padding: 8px 0; color: #666; width: 120px;"><strong>Partner:</strong></td>
-                  <td style="padding: 8px 0;">${user.name}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px 0; color: #666;"><strong>Estado:</strong></td>
-                  <td style="padding: 8px 0; color: #2e7d32; font-weight: bold;">✅ Aprobado</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px 0; color: #666;"><strong>Fecha:</strong></td>
-                  <td style="padding: 8px 0;">${new Date().toLocaleDateString('es-AR')}</td>
-                </tr>
-              </table>
-            </div>
-
-            <div style="background-color: #e8f5e8; padding: 15px; border-radius: 6px; margin-bottom: 20px;">
-              <h4 style="color: #2e7d32; margin-top: 0;">🎯 Beneficios de Partner</h4>
-              <p style="margin: 5px 0; color: #2e7d32;">
-                • Acceso exclusivo a la plataforma Partner<br>
-                • Descuentos y promociones especiales<br>
-                • Contenido premium y recursos<br>
-                • Soporte prioritario
-              </p>
-            </div>
-
-            <div style="text-align: center; margin-top: 30px;">
-              <a href="${process.env.FRONTEND_URL || 'https://tujamrock.com'}" 
-                 style="background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
-                 Acceder a la Plataforma
-              </a>
-            </div>
-
-            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0; text-align: center; color: #666; font-size: 14px;">
-              <p>Ahora eres oficialmente un Partner y parte de nuestro exclusivo Club.</p>
-              <p>¡Saludos cordiales!<br><strong>El equipo de Jamrock Club</strong></p>
-            </div>
-          </div>
-        `
-        : `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
-            <div style="text-align: center; margin-bottom: 30px;">
-              <h2 style="color: #333; margin-bottom: 10px;">Actualización de Estado</h2>
-              <p style="font-size: 16px; color: #666;">
-                Hola <strong>${user.name}</strong>, te informamos sobre una actualización en tu estado de Partner.
-              </p>
-            </div>
-            
-            <div style="background-color: #f9f9f9; padding: 20px; border-radius: 6px; margin-bottom: 20px;">
-              <h3 style="color: #333; margin-top: 0; margin-bottom: 15px;">ℹ️ Cambio de Estado</h3>
-              
-              <table style="width: 100%; border-collapse: collapse;">
-                <tr>
-                  <td style="padding: 8px 0; color: #666; width: 120px;"><strong>Usuario:</strong></td>
-                  <td style="padding: 8px 0;">${user.name}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px 0; color: #666;"><strong>Estado:</strong></td>
-                  <td style="padding: 8px 0; color: #f44336; font-weight: bold;">❌ Revocado</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px 0; color: #666;"><strong>Fecha:</strong></td>
-                  <td style="padding: 8px 0;">${new Date().toLocaleDateString('es-AR')}</td>
-                </tr>
-              </table>
-            </div>
-
-            <div style="background-color: #ffebee; padding: 15px; border-radius: 6px; margin-bottom: 20px;">
-              <h4 style="color: #c62828; margin-top: 0;">📢 Información Importante</h4>
-              <p style="margin: 5px 0; color: #c62828;">
-                • Tu estado de Partner en Jamrock ha sido actualizado<br>
-                • Ya no tienes acceso privilegiado como socio del Club<br>
-                • Los beneficios exclusivos han sido suspendidos
-              </p>
-            </div>
-
-            <div style="text-align: center; margin-top: 30px;">
-              <a href="${process.env.FRONTEND_URL || 'https://tujamrock.com'}" 
-                 style="background-color: #757575; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
-                 Visitar Jamrock Club
-              </a>
-            </div>
-
-            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0; text-align: center; color: #666; font-size: 14px;">
-              <p>Si crees que esto es un error, por favor contacta con nosotros.</p>
-              <p>¡Saludos cordiales!<br><strong>El equipo de Jamrock Club</strong></p>
-            </div>
-          </div>
-        `
-    };
-
-    const info = await transporter.sendMail(mailOptions);
-    return { success: true, messageId: info.messageId };
-
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-};
-
+// ════════════════════════════════════════════════════════════════════════════════
+// 7. RESET DE CONTRASEÑA
+// ════════════════════════════════════════════════════════════════════════════════
 const sendPasswordResetRequestEmail = async (user, token) => {
-  try {
-    const resetPasswordLink = `${process.env.FRONTEND_URL || 'https://tujamrock.com'}/reset-password/${token}`;
-
-    const mailOptions = {
-      from: `"Jamrock Club" <${process.env.EMAIL_USER}>`,
-      to: user.email,
-      subject: '🔐 Restablecimiento de Contraseña - Jamrock Club',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
-          <div style="text-align: center; margin-bottom: 30px;">
-            <h2 style="color: #333; margin-bottom: 10px;">Restablecer Contraseña</h2>
-            <p style="font-size: 16px; color: #666;">
-              Hola <strong>${user.name}</strong>, hemos recibido una solicitud para restablecer tu contraseña.
-            </p>
-          </div>
-          
-          <div style="background-color: #f9f9f9; padding: 20px; border-radius: 6px; margin-bottom: 20px;">
-            <h3 style="color: #333; margin-top: 0; margin-bottom: 15px;">🔑 Solicitud de Restablecimiento</h3>
-            
-            <table style="width: 100%; border-collapse: collapse;">
-              <tr>
-                <td style="padding: 8px 0; color: #666; width: 120px;"><strong>Usuario:</strong></td>
-                <td style="padding: 8px 0;">${user.name}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Email:</strong></td>
-                <td style="padding: 8px 0;">${user.email}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Solicitado:</strong></td>
-                <td style="padding: 8px 0;">${new Date().toLocaleDateString('es-AR')} ${new Date().toLocaleTimeString('es-AR')}</td>
-              </tr>
-            </table>
-          </div>
-
-          <div style="background-color: #e3f2fd; padding: 15px; border-radius: 6px; margin-bottom: 20px;">
-            <h4 style="color: #1565c0; margin-top: 0;">⚠️ Enlace de Seguridad</h4>
-            <p style="margin: 5px 0; color: #1565c0;">
-              • Este enlace es personal e intransferible<br>
-              • Expirará automáticamente en 1 hora<br>
-              • No lo compartas con nadie
-            </p>
-          </div>
-
-          <div style="text-align: center; margin-top: 30px;">
-            <a href="${resetPasswordLink}" 
-               style="background-color: #2196F3; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold; font-size: 16px;">
-               🔓 Restablecer Contraseña
-            </a>
-          </div>
-
-          <div style="margin-top: 20px; padding: 15px; background-color: #fff3cd; border-radius: 6px;">
-            <h4 style="color: #856404; margin-top: 0; margin-bottom: 10px;">📝 Si el botón no funciona</h4>
-            <p style="margin: 0; color: #856404; font-size: 14px; word-break: break-all;">
-              Copia y pega este enlace en tu navegador:<br>
-              <strong>${resetPasswordLink}</strong>
-            </p>
-          </div>
-
-          <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0; text-align: center; color: #666; font-size: 14px;">
-            <p><strong>¿No solicitaste este cambio?</strong><br>
-            Si no realizaste esta solicitud, puedes ignorar este mensaje. Tu contraseña permanecerá sin cambios.</p>
-            <p>¡Saludos cordiales!<br><strong>El equipo de Jamrock Club</strong></p>
-          </div>
+  const link = `${FRONTEND}/reset-password/${token}`;
+  return send({
+    from: FROM,
+    to: user.email,
+    subject: `🔐 Restablecer contraseña — ${SHOP_NAME}`,
+    html: `
+      <div style="${baseStyle}">
+        <h2 style="color: #333;">Restablecer contraseña</h2>
+        <p style="color: #666;">Hola <strong>${user.name}</strong>, recibimos una solicitud para restablecer tu contraseña.</p>
+        <div style="background: #e3f2fd; padding: 15px; border-radius: 6px; margin: 20px 0;">
+          <strong>⚠️</strong> Este enlace expira en <strong>1 hora</strong> y es de uso único.
         </div>
-      `
-    };
-
-    const info = await transporter.sendMail(mailOptions);
-    return { success: true, messageId: info.messageId };
-
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
+        <div style="text-align: center; margin-top: 25px;">
+          <a href="${link}" style="${btnStyle('#2196F3')}">🔓 Restablecer contraseña</a>
+        </div>
+        <p style="color: #999; font-size: 12px; text-align: center; margin-top: 15px;">
+          Si no solicitaste esto, ignorá este email.
+        </p>
+        ${footer}
+      </div>
+    `,
+  });
 };
 
 const sendPasswordResetConfirmationEmail = async (user) => {
-  try {
-    const mailOptions = {
-      from: `"Jamrock Club" <${process.env.EMAIL_USER}>`,
-      to: user.email,
-      subject: '✅ Contraseña Actualizada - Jamrock Club',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
-          <div style="text-align: center; margin-bottom: 30px;">
-            <h2 style="color: #333; margin-bottom: 10px;">Contraseña Actualizada</h2>
-            <p style="font-size: 16px; color: #666;">
-              Hola <strong>${user.name}</strong>, tu contraseña ha sido actualizada exitosamente.
-            </p>
-          </div>
-          
-          <div style="background-color: #f9f9f9; padding: 20px; border-radius: 6px; margin-bottom: 20px;">
-            <h3 style="color: #333; margin-top: 0; margin-bottom: 15px;">✅ Cambio Confirmado</h3>
-            
-            <table style="width: 100%; border-collapse: collapse;">
-              <tr>
-                <td style="padding: 8px 0; color: #666; width: 120px;"><strong>Usuario:</strong></td>
-                <td style="padding: 8px 0;">${user.name}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Email:</strong></td>
-                <td style="padding: 8px 0;">${user.email}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Estado:</strong></td>
-                <td style="padding: 8px 0; color: #2e7d32; font-weight: bold;">✅ Contraseña Actualizada</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Fecha:</strong></td>
-                <td style="padding: 8px 0;">${new Date().toLocaleDateString('es-AR')} ${new Date().toLocaleTimeString('es-AR')}</td>
-              </tr>
-            </table>
-          </div>
-
-          <div style="background-color: #e8f5e8; padding: 15px; border-radius: 6px; margin-bottom: 20px;">
-            <h4 style="color: #2e7d32; margin-top: 0;">🔒 Seguridad de tu Cuenta</h4>
-            <p style="margin: 5px 0; color: #2e7d32;">
-              • Tu nueva contraseña ha sido establecida correctamente<br>
-              • Puedes iniciar sesión con tus nuevas credenciales<br>
-              • Recomendamos usar contraseñas seguras y únicas
-            </p>
-          </div>
-
-          <div style="background-color: #fff3cd; padding: 15px; border-radius: 6px; margin-bottom: 20px;">
-            <h4 style="color: #856404; margin-top: 0;">⚠️ ¿No reconoces esta actividad?</h4>
-            <p style="margin: 5px 0; color: #856404;">
-              Si no realizaste este cambio, por favor:<br>
-              • Contacta a soporte inmediatamente<br>
-              • Revisa la seguridad de tu cuenta<br>
-              • Considera cambiar tu contraseña nuevamente
-            </p>
-          </div>
-
-          <div style="text-align: center; margin-top: 30px;">
-            <a href="${process.env.FRONTEND_URL || 'https://tujamrock.com'}" 
-               style="background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
-               Acceder a mi Cuenta
-            </a>
-          </div>
-
-          <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0; text-align: center; color: #666; font-size: 14px;">
-            <p>Para mayor seguridad, mantén tu contraseña en un lugar seguro.</p>
-            <p>¡Saludos cordiales!<br><strong>El equipo de Jamrock Club</strong></p>
-          </div>
+  return send({
+    from: FROM,
+    to: user.email,
+    subject: `✅ Contraseña actualizada — ${SHOP_NAME}`,
+    html: `
+      <div style="${baseStyle}">
+        <h2 style="color: #333;">Contraseña actualizada</h2>
+        <p style="color: #666;">Hola <strong>${user.name}</strong>, tu contraseña fue actualizada correctamente.</p>
+        <div style="background: #fff3cd; padding: 15px; border-radius: 6px; margin: 20px 0;">
+          <strong>⚠️ ¿No fuiste vos?</strong> Contactanos de inmediato.
         </div>
-      `
-    };
-
-    const info = await transporter.sendMail(mailOptions);
-    return { success: true, messageId: info.messageId };
-
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-};
-
-// En services/NodemailerSender.js - Agregar esta función
-const sendTurnoStatusEmail = async (turno, estadoAnterior, nuevoEstado) => {
-  try {
-    // Determinar el asunto y mensaje según el estado
-    let subject, message, title;
-
-    if (nuevoEstado === 'confirmado') {
-      subject = '✅ Tu turno ha sido confirmado - Jamrock Club';
-      title = '¡Turno Confirmado!';
-      message = 'Nos complace informarte que tu turno ha sido <strong>confirmado</strong> por el especialista.';
-    } else if (nuevoEstado === 'cancelado') {
-      subject = '❌ Tu turno ha sido cancelado - Jamrock Club';
-      title = 'Turno Cancelado';
-      message = 'Te informamos que tu turno ha sido <strong>cancelado</strong> por el especialista.';
-    } else {
-      return { success: true, skipped: true };
-    }
-
-    // ✅ CORRECCIÓN: Aplicar el MISMO ajuste de zona horaria que en createTurno
-    const fechaTurno = new Date(turno.fecha);
-
-    // ✅ APLICAR EL MISMO AJUSTE QUE EN CREATE_TURNO
-    // En createTurno haces: fechaTurno.setMinutes(fechaTurno.getMinutes() - offset)
-    // Donde offset = fechaTurno.getTimezoneOffset()
-    // Para revertir ese ajuste y mostrar la hora correcta, debemos SUMAR el offset
-    const offset = fechaTurno.getTimezoneOffset();
-    fechaTurno.setMinutes(fechaTurno.getMinutes() + offset);
-
-    // Formatear fecha y hora CORREGIDA
-    const fechaFormateada = fechaTurno.toLocaleDateString('es-AR', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric'
-    });
-
-    const horaFormateada = fechaTurno.toLocaleTimeString('es-AR', {
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-
-    const mailOptions = {
-      from: `"Jamrock Club" <${process.env.EMAIL_USER}>`,
-      to: turno.userId.email,
-      subject: subject,
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
-          <div style="text-align: center; margin-bottom: 30px;">
-            <h2 style="color: #333; margin-bottom: 10px;">${title}</h2>
-            <div style="font-size: 16px; color: #666;">
-              ${message}
-            </div>
-          </div>
-          
-          <div style="background-color: #f9f9f9; padding: 20px; border-radius: 6px; margin-bottom: 20px;">
-            <h3 style="color: #333; margin-top: 0; margin-bottom: 15px;">📋 Información del Turno</h3>
-            
-            <table style="width: 100%; border-collapse: collapse;">
-              <tr>
-                <td style="padding: 8px 0; color: #666; width: 120px;"><strong>Paciente:</strong></td>
-                <td style="padding: 8px 0;">${turno.pacienteId.fullName}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Fecha:</strong></td>
-                <td style="padding: 8px 0;">${fechaFormateada}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Hora:</strong></td>
-                <td style="padding: 8px 0;">${horaFormateada} hs</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Especialista:</strong></td>
-                <td style="padding: 8px 0;">${turno.especialistaId.userId.name}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Especialidad:</strong></td>
-                <td style="padding: 8px 0;">${turno.especialistaId.especialidad}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Motivo:</strong></td>
-                <td style="padding: 8px 0;">${turno.motivo}</td>
-              </tr>
-              ${turno.notas ? `
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Notas:</strong></td>
-                <td style="padding: 8px 0;">${turno.notas}</td>
-              </tr>
-              ` : ''}
-            </table>
-          </div>
-
-          ${nuevoEstado === 'confirmado' ? `
-          <div style="background-color: #e8f5e8; padding: 15px; border-radius: 6px; margin-bottom: 20px;">
-            <h4 style="color: #2e7d32; margin-top: 0;">💡 Recordatorio importante</h4>
-            <p style="margin: 5px 0; color: #2e7d32;">
-              • Llegá 15 minutos antes de tu turno<br>
-              • Traé tu documentación médica si es necesario<br>
-              • Recordá que podés cancelar o modificar tu turno con 24hs de anticipación
-            </p>
-          </div>
-          ` : ''}
-
-          <div style="text-align: center; margin-top: 30px;">
-            <a href="${process.env.FRONTEND_URL || 'https://tujamrock.com'}/turnos/paciente" 
-               style="background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
-               Ver mis turnos
-            </a>
-          </div>
-
-          <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0; text-align: center; color: #666; font-size: 14px;">
-            <p>Si tenés alguna duda, no dudes en contactarnos.</p>
-            <p>¡Saludos cordiales!<br><strong>El equipo de Jamrock Club</strong></p>
-          </div>
+        <div style="text-align: center; margin-top: 25px;">
+          <a href="${FRONTEND}" style="${btnStyle()}">Ir al inicio</a>
         </div>
-      `
-    };
-
-    const info = await transporter.sendMail(mailOptions);
-    return { success: true, messageId: info.messageId };
-
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-};
-
-// Email para Pedido Confirmado (Estado: pendiente/pagado)
-const sendPedidoConfirmadoEmail = async (cart, user) => {
-  try {
-    const mailOptions = {
-      from: `"Jamrock Club" <${process.env.EMAIL_USER}>`,
-      to: user.email,
-      subject: '✅ Pedido Confirmado - Jamrock Club',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
-          <div style="text-align: center; margin-bottom: 30px;">
-            <h2 style="color: #333; margin-bottom: 10px;">¡Pedido Confirmado!</h2>
-            <p style="font-size: 16px; color: #666;">
-              Hola <strong>${user.name}</strong>, tu pedido ha sido recibido exitosamente.
-            </p>
-          </div>
-          
-          <div style="background-color: #f9f9f9; padding: 20px; border-radius: 6px; margin-bottom: 20px;">
-            <h3 style="color: #333; margin-top: 0; margin-bottom: 15px;">📦 Resumen del Pedido</h3>
-            
-            <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">
-              <tr>
-                <td style="padding: 8px 0; color: #666; width: 120px;"><strong>N° de Pedido:</strong></td>
-                <td style="padding: 8px 0;">${cart._id}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Fecha:</strong></td>
-                <td style="padding: 8px 0;">${new Date(cart.createdAt).toLocaleDateString('es-AR')}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Total:</strong></td>
-                <td style="padding: 8px 0; font-weight: bold;">$${cart.totalAmount}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Método de Pago:</strong></td>
-                <td style="padding: 8px 0; text-transform: capitalize;">${cart.paymentMethod}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Entrega:</strong></td>
-                <td style="padding: 8px 0; text-transform: capitalize;">${cart.deliveryMethod}</td>
-              </tr>
-            </table>
-
-            ${cart.deliveryMethod === 'envio' ? `
-            <div style="margin-top: 15px; padding: 15px; background-color: #e8f4fd; border-radius: 4px;">
-              <h4 style="margin: 0 0 10px 0; color: #1565c0;">🚚 Información de Envío</h4>
-              <p style="margin: 5px 0;"><strong>Dirección:</strong> ${cart.shippingAddress.address}</p>
-              <p style="margin: 5px 0;"><strong>Contacto:</strong> ${cart.shippingAddress.name} - ${cart.shippingAddress.phone}</p>
-            </div>
-            ` : `
-            <div style="margin-top: 15px; padding: 15px; background-color: #e8f5e8; border-radius: 4px;">
-              <h4 style="margin: 0 0 10px 0; color: #2e7d32;">🏪 Retiro en Local</h4>
-              <p style="margin: 5px 0;">Podrás retirar tu pedido en nuestro local.</p>
-              <p style="margin: 5px 0;"><strong>Horario:</strong> Lunes a Viernes de 9:00 a 18:00</p>
-            </div>
-            `}
-          </div>
-
-          <div style="background-color: #fff3cd; padding: 15px; border-radius: 6px; margin-bottom: 20px;">
-            <h4 style="color: #856404; margin-top: 0;">📋 Próximos Pasos</h4>
-            <p style="margin: 5px 0; color: #856404;">
-              ${cart.paymentMethod === 'transferencia' ?
-          '• Subí tu comprobante de transferencia para acelerar el proceso<br>' :
-          '• Tu pago ha sido confirmado<br>'
-        }
-              • Te notificaremos cuando tu pedido esté en preparación<br>
-              • ${cart.deliveryMethod === 'envio' ? 'Coordinaremos el envío' : 'Podrás retirarlo'} cuando esté listo
-            </p>
-          </div>
-
-          <div style="text-align: center; margin-top: 30px;">
-            <a href="${process.env.FRONTEND_URL || 'https://tujamrock.com'}/estadoDelEnvio" 
-               style="background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
-               Seguir mi Pedido
-            </a>
-          </div>
-
-          <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0; text-align: center; color: #666; font-size: 14px;">
-            <p>¿Tienes preguntas? Contáctanos en ${process.env.EMAIL_USER}</p>
-            <p>¡Gracias por confiar en nosotros!<br><strong>El equipo de Jamrock Club</strong></p>
-          </div>
-        </div>
-      `
-    };
-
-    const info = await transporter.sendMail(mailOptions);
-    return { success: true, messageId: info.messageId };
-
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-};
-
-// Email para Pago Confirmado
-const sendPagoConfirmadoEmail = async (cart, user) => {
-  try {
-    const mailOptions = {
-      from: `"Jamrock Club" <${process.env.EMAIL_USER}>`,
-      to: user.email,
-      subject: '✅ Pago Confirmado - Jamrock Club',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
-          <div style="text-align: center; margin-bottom: 30px;">
-            <h2 style="color: #333; margin-bottom: 10px;">¡Pago Verificado Exitosamente!</h2>
-            <p style="font-size: 16px; color: #666;">
-              Hola <strong>${user.name}</strong>, hemos confirmado tu pago.
-            </p>
-          </div>
-          
-          <div style="background-color: #f9f9f9; padding: 20px; border-radius: 6px; margin-bottom: 20px;">
-            <h3 style="color: #333; margin-top: 0; margin-bottom: 15px;">💳 Confirmación de Pago</h3>
-            
-            <table style="width: 100%; border-collapse: collapse;">
-              <tr>
-                <td style="padding: 8px 0; color: #666; width: 120px;"><strong>N° de Pedido:</strong></td>
-                <td style="padding: 8px 0;">${cart._id}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Monto:</strong></td>
-                <td style="padding: 8px 0; font-weight: bold;">$${cart.totalAmount}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Método:</strong></td>
-                <td style="padding: 8px 0; text-transform: capitalize;">${cart.paymentMethod}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Estado:</strong></td>
-                <td style="padding: 8px 0; color: #2e7d32; font-weight: bold;">✅ Verificado</td>
-              </tr>
-            </table>
-          </div>
-
-          <div style="background-color: #e8f5e8; padding: 15px; border-radius: 6px; margin-bottom: 20px;">
-            <h4 style="color: #2e7d32; margin-top: 0;">🚀 Próximo Paso</h4>
-            <p style="margin: 5px 0; color: #2e7d32;">
-              Tu pedido ha pasado a <strong>preparación</strong>. 
-              ${cart.deliveryMethod === 'envio' ?
-          'Te notificaremos cuando sea enviado.' :
-          'Te avisaremos cuando esté listo para retirar.'
-        }
-            </p>
-          </div>
-
-          <div style="text-align: center; margin-top: 30px;">
-            <a href="${process.env.FRONTEND_URL || 'https://tujamrock.com'}/estadoDelEnvio" 
-               style="background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
-               Ver Estado del Pedido
-            </a>
-          </div>
-
-          <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0; text-align: center; color: #666; font-size: 14px;">
-            <p>¡Gracias por tu compra!<br><strong>El equipo de Jamrock Club</strong></p>
-          </div>
-        </div>
-      `
-    };
-
-    const info = await transporter.sendMail(mailOptions);
-    return { success: true, messageId: info.messageId };
-
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-};
-
-// Email para En Preparación
-const sendEnPreparacionEmail = async (cart, user) => {
-  try {
-    const mensajeEntrega = cart.deliveryMethod === 'envio'
-      ? 'Estamos preparando tu pedido para envío.'
-      : 'Estamos preparando tu pedido. Podrás pasar a retirarlo cuando esté listo.';
-
-    const mailOptions = {
-      from: `"Jamrock Club" <${process.env.EMAIL_USER}>`,
-      to: user.email,
-      subject: '👨‍🍳 Pedido en Preparación - Jamrock Club',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
-          <div style="text-align: center; margin-bottom: 30px;">
-            <h2 style="color: #333; margin-bottom: 10px;">¡Pedido en Preparación!</h2>
-            <p style="font-size: 16px; color: #666;">
-              Hola <strong>${user.name}</strong>, ${mensajeEntrega.toLowerCase()}
-            </p>
-          </div>
-          
-          <div style="background-color: #f9f9f9; padding: 20px; border-radius: 6px; margin-bottom: 20px;">
-            <h3 style="color: #333; margin-top: 0; margin-bottom: 15px;">📦 Detalles del Pedido</h3>
-            
-            <table style="width: 100%; border-collapse: collapse;">
-              <tr>
-                <td style="padding: 8px 0; color: #666; width: 120px;"><strong>N° de Pedido:</strong></td>
-                <td style="padding: 8px 0;">${cart._id}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Estado:</strong></td>
-                <td style="padding: 8px 0; color: #ff9800; font-weight: bold;">👨‍🍳 En Preparación</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Entrega:</strong></td>
-                <td style="padding: 8px 0; text-transform: capitalize;">${cart.deliveryMethod}</td>
-              </tr>
-            </table>
-
-            ${cart.deliveryMethod === 'retiro' ? `
-            <div style="margin-top: 15px; padding: 15px; background-color: #e8f5e8; border-radius: 4px;">
-              <h4 style="margin: 0 0 10px 0; color: #2e7d32;">🏪 Retiro en Local</h4>
-              <p style="margin: 5px 0;"><strong>Horario de retiro:</strong> Lunes a Viernes de 9:00 a 18:00</p>
-              <p style="margin: 5px 0;">Te enviaremos un aviso cuando tu pedido esté listo para retirar.</p>
-            </div>
-            ` : ''}
-          </div>
-
-          <div style="background-color: #fff3cd; padding: 15px; border-radius: 6px; margin-bottom: 20px;">
-            <h4 style="color: #856404; margin-top: 0;">⏱️ Tiempo Estimado</h4>
-            <p style="margin: 5px 0; color: #856404;">
-              • Preparación: 24-48 horas<br>
-              ${cart.deliveryMethod === 'envio' ?
-          '• Envío: 2-5 días hábiles<br>' :
-          '• Retiro: Inmediato después de la preparación<br>'
-        }
-              • Te notificaremos en cada paso
-            </p>
-          </div>
-
-          <div style="text-align: center; margin-top: 30px;">
-            <a href="${process.env.FRONTEND_URL || 'https://tujamrock.com'}/estadoDelEnvio" 
-               style="background-color: #ff9800; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
-               Seguir mi Pedido
-            </a>
-          </div>
-
-          <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0; text-align: center; color: #666; font-size: 14px;">
-            <p>¿Consultas? Escríbenos a ${process.env.EMAIL_USER}</p>
-            <p>¡Estamos trabajando en tu pedido!<br><strong>El equipo de Jamrock Club</strong></p>
-          </div>
-        </div>
-      `
-    };
-
-    const info = await transporter.sendMail(mailOptions);
-    return { success: true, messageId: info.messageId };
-
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-};
-
-// Email para Entregado
-const sendPedidoEntregadoEmail = async (cart, user) => {
-  try {
-    const mailOptions = {
-      from: `"Jamrock Club" <${process.env.EMAIL_USER}>`,
-      to: user.email,
-      subject: '🎉 ¡Pedido Entregado! - Jamrock Club',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
-          <div style="text-align: center; margin-bottom: 30px;">
-            <h2 style="color: #333; margin-bottom: 10px;">¡Pedido Entregado!</h2>
-            <p style="font-size: 16px; color: #666;">
-              Hola <strong>${user.name}</strong>, tu pedido ha sido ${cart.deliveryMethod === 'envio' ? 'entregado' : 'retirado'} exitosamente.
-            </p>
-          </div>
-          
-          <div style="background-color: #f9f9f9; padding: 20px; border-radius: 6px; margin-bottom: 20px;">
-            <h3 style="color: #333; margin-top: 0; margin-bottom: 15px;">✅ Resumen Final</h3>
-            
-            <table style="width: 100%; border-collapse: collapse;">
-              <tr>
-                <td style="padding: 8px 0; color: #666; width: 120px;"><strong>N° de Pedido:</strong></td>
-                <td style="padding: 8px 0;">${cart._id}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Estado:</strong></td>
-                <td style="padding: 8px 0; color: #4CAF50; font-weight: bold;">🎉 Entregado</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Fecha:</strong></td>
-                <td style="padding: 8px 0;">${new Date().toLocaleDateString('es-AR')}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 0; color: #666;"><strong>Método:</strong></td>
-                <td style="padding: 8px 0; text-transform: capitalize;">${cart.deliveryMethod}</td>
-              </tr>
-            </table>
-          </div>
-
-          <div style="background-color: #e8f5e8; padding: 15px; border-radius: 6px; margin-bottom: 20px;">
-            <h4 style="color: #2e7d32; margin-top: 0;">⭐ ¡Tu Opinión Importa!</h4>
-            <p style="margin: 5px 0; color: #2e7d32;">
-              Ayuda a otros compradores calificando los productos que recibiste.<br>
-              Tu experiencia nos ayuda a mejorar.
-            </p>
-          </div>
-
-          <div style="text-align: center; margin-top: 30px;">
-            <a href="${process.env.FRONTEND_URL || 'https://tujamrock.com'}/estadoDelEnvio" 
-               style="background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold; margin: 5px;">
-               Calificar Productos
-            </a>
-          </div>
-
-          <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0; text-align: center; color: #666; font-size: 14px;">
-            <p>¿Necesitas ayuda con tu pedido? Contáctanos.</p>
-            <p>¡Gracias por elegirnos!<br><strong>El equipo de Jamrock Club</strong></p>
-          </div>
-        </div>
-      `
-    };
-
-    const info = await transporter.sendMail(mailOptions);
-    return { success: true, messageId: info.messageId };
-
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-};
-
-// 🆕 NUEVA FUNCIÓN: Envío de Reporte de Facturación
-const sendReporteFacturacionEmail = async (reporte, destinatario = null) => {
-  try {
-    console.log('📧 [EmailSender] Preparando email de reporte...');
-
-    // Si no se especifica destinatario, usar el email del admin o uno por defecto
-    const emailDestino = destinatario || process.env.ADMIN_EMAIL || process.env.EMAIL_USER;
-
-    if (!emailDestino) {
-      throw new Error('No se ha especificado un destinatario para el email');
-    }
-
-    console.log('📧 [EmailSender] Destinatario:', emailDestino);
-
-    const mailOptions = {
-      from: `"219Meds - Sistema de Facturación" <${process.env.EMAIL_USER}>`,
-      to: emailDestino,
-      subject: `📊 Reporte de Facturación - ${reporte.periodo} - 219Meds`,
-      html: generarHTMLReporte(reporte),
-      attachments: [
-        {
-          filename: `reporte-facturacion-${new Date().toISOString().split('T')[0]}.json`,
-          content: JSON.stringify(reporte, null, 2),
-          contentType: 'application/json'
-        }
-      ]
-    };
-
-    console.log('📧 [EmailSender] Enviando email...');
-    const info = await transporter.sendMail(mailOptions);
-    
-    console.log(`✅ [EmailSender] Email enviado a ${emailDestino}, MessageID: ${info.messageId}`);
-    return { 
-      success: true, 
-      messageId: info.messageId,
-      message: 'Reporte enviado exitosamente por email'
-    };
-
-  } catch (error) {
-    console.error('❌ [EmailSender] Error enviando email:', error.message);
-    return { 
-      success: false, 
-      error: error.message 
-    };
-  }
-};
-
-/**
- * Genera el HTML para el email del reporte
- */
-const generarHTMLReporte = (reporte) => {
-  return `
-    <div style="font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto; padding: 25px; border: 1px solid #e0e0e0; border-radius: 10px; background: white;">
-      <div style="text-align: center; margin-bottom: 30px; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 8px;">
-        <h1 style="color: white; margin: 0 0 10px 0; font-size: 28px;">📊 Reporte de Facturación</h1>
-        <p style="font-size: 16px; margin: 5px 0; opacity: 0.9;">Período: ${reporte.periodo}</p>
-        <p style="font-size: 14px; margin: 0; opacity: 0.8;">Generado: ${new Date(reporte.fechaGeneracion).toLocaleString('es-AR')}</p>
+        ${footer}
       </div>
-      
-      <!-- Resumen Ejecutivo -->
-      <div style="margin-bottom: 30px;">
-        <h2 style="color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; margin-bottom: 20px;">📈 Resumen Ejecutivo</h2>
-        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-top: 15px;">
-          <div style="background: #ecf0f1; padding: 20px; border-radius: 8px; text-align: center; border-left: 4px solid #27ae60;">
-            <h3 style="margin: 0 0 10px 0; color: #2c3e50; font-size: 14px;">Ventas Totales</h3>
-            <p style="font-size: 24px; font-weight: bold; color: #27ae60; margin: 0;">$${reporte.ventasTotales?.toFixed(2) || '0.00'}</p>
-          </div>
-          <div style="background: #ecf0f1; padding: 20px; border-radius: 8px; text-align: center; border-left: 4px solid #3498db;">
-            <h3 style="margin: 0 0 10px 0; color: #2c3e50; font-size: 14px;">Total Turnos</h3>
-            <p style="font-size: 24px; font-weight: bold; color: #3498db; margin: 0;">${reporte.analisisTurnos?.total || 0}</p>
-          </div>
-          <div style="background: #ecf0f1; padding: 20px; border-radius: 8px; text-align: center; border-left: 4px solid #e74c3c;">
-            <h3 style="margin: 0 0 10px 0; color: #2c3e50; font-size: 14px;">Total Pedidos</h3>
-            <p style="font-size: 24px; font-weight: bold; color: #e74c3c; margin: 0;">${reporte.analisisPedidos?.total || 0}</p>
-          </div>
-        </div>
-      </div>
-
-      <!-- Información adicional simplificada -->
-      <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center; margin-top: 20px;">
-        <p style="margin: 0; color: #7f8c8d; font-size: 14px;">
-          Reporte generado automáticamente por el Sistema de Facturación 219Meds
-        </p>
-        <p style="margin: 10px 0 0 0; color: #7f8c8d; font-size: 12px;">
-          Consulta el archivo JSON adjunto para el análisis completo y detallado
-        </p>
-      </div>
-    </div>
-  `;
+    `,
+  });
 };
 
+// ════════════════════════════════════════════════════════════════════════════════
+// EXPORTS
+// ════════════════════════════════════════════════════════════════════════════════
 module.exports = {
-  sendPartnerRequestEmail,
-  sendPartnerStatusEmail,
-  sendPasswordResetRequestEmail,
-  sendPasswordResetConfirmationEmail,
-  sendTurnoStatusEmail,
   sendPedidoConfirmadoEmail,
   sendPagoConfirmadoEmail,
   sendEnPreparacionEmail,
+  sendEnCaminoEmail,
   sendPedidoEntregadoEmail,
-  sendReporteFacturacionEmail,
+  sendCarritoAbandonadoEmail,
+  sendPasswordResetRequestEmail,
+  sendPasswordResetConfirmationEmail,
 };

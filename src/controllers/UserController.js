@@ -1,255 +1,175 @@
-// controllers/UserController.js
 const mongoose = require('mongoose');
 const User = require('../models/User');
-const { sendPartnerStatusEmail } = require('../utils/emailSender');
-const { generateAndUploadQR } = require('../utils/cloudinaryUtils');
 
-// === FUNCIÓN AUXILIAR PARA NO REPETIR CÓDIGO ===
-const getSafeUserResponse = (user) => ({
+// ─── Helper: respuesta segura (sin password) ─────────────────────────────────
+const safeUser = (user) => ({
   _id: user._id,
   name: user.name,
   email: user.email,
+  role: user.role,
   profileImage: user.profileImage || null,
-  qrCode: user.qrCode || null,
-  isPartner: user.isPartner || false,
-  isAdmin: user.isAdmin || false,
-  isSecretaria: user.isSecretaria || false,
-  isMedico: user.isMedico || false,
-  isPaciente: user.isPaciente || false,
-  isPending: user.isPending || false
+  savedAddress: user.savedAddress || null,
+  createdAt: user.createdAt,
 });
 
-// GET todos los usuarios
+// ─── GET /users ──────────────────────────────────────────────────────────────
+// Solo moderador+. Moderador ve la lista pero no puede cambiar roles desde acá.
 const getAllUsers = async (req, res) => {
   try {
-    const users = await User.find()
-      .select('-password')
-      .populate('partnerData');
-    
-    // Convertir a objeto seguro (opcional, pero recomendado)
-    const safeUsers = users.map(getSafeUserResponse);
-    res.status(200).json(safeUsers);
+    const users = await User.find().select('-password -__v').sort({ createdAt: -1 });
+    res.status(200).json(users.map(safeUser));
   } catch (err) {
-    console.error('Error getAllUsers:', err);
-    res.status(500).json({ error: 'Error al obtener los usuarios' });
+    console.error('getAllUsers:', err);
+    res.status(500).json({ error: 'Error al obtener usuarios' });
   }
 };
 
-// GET un usuario por ID (CRÍTICO: este se usa en login, perfil, etc.)
+// ─── GET /users/:id ──────────────────────────────────────────────────────────
 const getUserById = async (req, res) => {
   try {
-    const user = await User.findById(req.params.id)
-      .select('-password')
-      .populate('partnerData');
-
+    const user = await User.findById(req.params.id).select('-password -__v');
     if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
-
-    res.status(200).json({
-      user: getSafeUserResponse(user)  // ← AHORA DEVUELVE TODO
-    });
+    res.status(200).json(safeUser(user));
   } catch (err) {
-    console.error('Error getUserById:', err);
+    console.error('getUserById:', err);
     res.status(500).json({ error: 'Error al obtener el usuario' });
   }
 };
 
-// GET buscar usuarios
+// ─── GET /users/search?q= ────────────────────────────────────────────────────
 const searchUsers = async (req, res) => {
   const { q } = req.query;
+  if (!q) return res.status(400).json({ error: 'Parámetro de búsqueda requerido' });
+
   try {
     const users = await User.find({
       $or: [
         { name: { $regex: q, $options: 'i' } },
         { email: { $regex: q, $options: 'i' } },
-      ]
-    }).select('-password');
+      ],
+    }).select('-password -__v').limit(20);
 
-    const safeUsers = users.map(getSafeUserResponse);
-    res.status(200).json(safeUsers);
+    res.status(200).json(users.map(safeUser));
   } catch (err) {
-    console.error('Error searchUsers:', err);
-    res.status(500).json({ error: 'Error al buscar usuarios', details: err.message });
+    console.error('searchUsers:', err);
+    res.status(500).json({ error: 'Error al buscar usuarios' });
   }
 };
 
-// PUT actualizar datos del usuario (name, email)
+// ─── PUT /users/:id ──────────────────────────────────────────────────────────
+// El propio usuario edita su name, email y dirección guardada.
+// Admin/dios pueden editar cualquier usuario.
 const updateUser = async (req, res) => {
   try {
-    const user = await User.findById(req.params.id);
-    if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
+    const { id } = req.params;
 
-    if (req.user._id.toString() !== req.params.id && !req.user.isAdmin) {
-      return res.status(403).json({ error: 'No autorizado para editar este usuario' });
+    // Solo el propio usuario o admin+ pueden editar
+    const isSelf = req.user._id.toString() === id;
+    if (!isSelf && !req.user.isAtLeast('admin')) {
+      return res.status(403).json({ error: 'No autorizado' });
     }
 
-    const { name, email } = req.body;
+    const { name, email, savedAddress } = req.body;
+
     if (!name || !email) {
       return res.status(400).json({ error: 'Nombre y email son requeridos' });
     }
 
-    const emailExists = await User.findOne({ email, _id: { $ne: user._id } });
-    if (emailExists) {
-      return res.status(400).json({ error: 'El email ya está en uso' });
-    }
+    // Verificar email duplicado
+    const emailTaken = await User.findOne({ email, _id: { $ne: id } });
+    if (emailTaken) return res.status(400).json({ error: 'El email ya está en uso' });
 
-    user.name = name;
-    user.email = email;
+    const updated = await User.findByIdAndUpdate(
+      id,
+      {
+        name: name.trim(),
+        email: email.trim().toLowerCase(),
+        ...(savedAddress && { savedAddress }),
+      },
+      { new: true, runValidators: true }
+    ).select('-password -__v');
 
-    // Generar QR si no existe
-    if (!user.qrCode) {
-      try {
-        const qrCodeUrl = await generateAndUploadQR(user._id, {
-          name: user.name,
-          email: user.email
-        });
-        user.qrCode = qrCodeUrl;
-      } catch (qrError) {
-        console.error('Error generando QR en updateUser:', qrError);
-      }
-    }
+    if (!updated) return res.status(404).json({ error: 'Usuario no encontrado' });
 
-    await user.save();
-
-    res.status(200).json({
-      message: 'Usuario actualizado correctamente',
-      user: getSafeUserResponse(user)
-    });
+    res.status(200).json({ message: 'Usuario actualizado', user: safeUser(updated) });
   } catch (err) {
-    console.error('Error updateUser:', err);
-    res.status(500).json({
-      error: 'Error al actualizar usuario',
-      details: err.message
-    });
+    console.error('updateUser:', err);
+    res.status(500).json({ error: 'Error al actualizar usuario', details: err.message });
   }
 };
 
-// PATCH toggle isPartner
-const updatePartnerStatus = async (req, res) => {
+// ─── PATCH /users/:id/role ───────────────────────────────────────────────────
+// Cambia el rol de un usuario.
+// El guard `canAssignRole` del middleware ya verificó que el rol es asignable.
+const updateUserRole = async (req, res) => {
   try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-      return res.status(400).json({ error: 'ID de usuario no válido' });
+    const { id } = req.params;
+    const { role } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: 'ID inválido' });
     }
 
-    const user = await User.findById(req.params.id);
-    if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
-
-    const wasPartner = user.isPartner;
-    user.isPartner = !user.isPartner;
-    await user.save();
-
-    // Email (mantenido como estaba)
-    if ((!wasPartner && user.isPartner) || (wasPartner && !user.isPartner)) {
-      try {
-        await sendPartnerStatusEmail(user, user.isPartner);
-      } catch (emailError) {
-        console.error('Error enviando email de partner:', emailError);
-      }
+    // No podés cambiar tu propio rol
+    if (req.user._id.toString() === id) {
+      return res.status(400).json({ error: 'No podés cambiar tu propio rol' });
     }
 
-    res.status(200).json({
-      message: `El usuario ahora ${user.isPartner ? 'es' : 'no es'} partner.`,
-      user: getSafeUserResponse(user)  // ← COMPLETO
-    });
-  } catch (err) {
-    console.error('Error updatePartnerStatus:', err);
-    res.status(500).json({
-      error: 'Error al actualizar isPartner',
-      details: err.message
-    });
-  }
-};
+    const target = await User.findById(id);
+    if (!target) return res.status(404).json({ error: 'Usuario no encontrado' });
 
-// PATCH toggle isAdmin
-const updateAdminStatus = async (req, res) => {
-  try {
-    const user = await User.findById(req.params.id);
-    if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
-
-    user.isAdmin = !user.isAdmin;
-    await user.save();
-
-    res.status(200).json({
-      message: `El usuario ahora ${user.isAdmin ? 'es' : 'no es'} admin.`,
-      user: getSafeUserResponse(user)
-    });
-  } catch (err) {
-    console.error('Error updateAdminStatus:', err);
-    res.status(500).json({ error: 'Error al actualizar isAdmin', details: err.message });
-  }
-};
-
-// PATCH toggle isPending
-const updatePendingStatus = async (req, res) => {
-  try {
-    const user = await User.findById(req.params.id);
-    if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
-
-    user.isPending = !user.isPending;
-    await user.save();
-
-    res.status(200).json({
-      message: `El usuario ahora ${user.isPending ? 'está' : 'no está'} pendiente.`,
-      user: getSafeUserResponse(user)
-    });
-  } catch (err) {
-    console.error('Error updatePendingStatus:', err);
-    res.status(500).json({ error: 'Error al actualizar isPending', details: err.message });
-  }
-};
-
-// PATCH toggle isSecretaria
-const isSecretariaStatus = async (req, res) => {
-  try {
-    const user = await User.findById(req.params.id);
-    if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
-
-    user.isSecretaria = !user.isSecretaria;
-    await user.save();
-
-    res.status(200).json({
-      message: `El usuario ahora ${user.isSecretaria ? 'es' : 'no es'} secretaria.`,
-      user: getSafeUserResponse(user)
-    });
-  } catch (err) {
-    console.error('Error isSecretariaStatus:', err);
-    res.status(500).json({ error: 'Error al actualizar isSecretaria', details: err.message });
-  }
-};
-
-// PATCH toggle isMedico
-const updateMedicoStatus = async (req, res) => {
-  try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-      return res.status(400).json({ error: 'ID de usuario no válido' });
+    // Tampoco podés bajarle el rol a alguien de igual o mayor jerarquía
+    if (!req.user.canAssignRole(target.role)) {
+      return res.status(403).json({
+        error: `No podés modificar el rol de un usuario con rol "${target.role}"`,
+      });
     }
 
-    const user = await User.findById(req.params.id);
-    if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
-
-    user.isMedico = !user.isMedico;
-    await user.save();
+    target.role = role;
+    await target.save();
 
     res.status(200).json({
-      message: `El usuario ahora ${user.isMedico ? 'es' : 'no es'} médico.`,
-      user: getSafeUserResponse(user)
+      message: `Rol actualizado a "${role}"`,
+      user: safeUser(target),
     });
   } catch (err) {
-    console.error('Error updateMedicoStatus:', err);
-    res.status(500).json({
-      error: 'Error al actualizar isMedico',
-      details: err.message
-    });
+    console.error('updateUserRole:', err);
+    res.status(500).json({ error: 'Error al actualizar rol', details: err.message });
+  }
+};
+
+// ─── DELETE /users/:id ───────────────────────────────────────────────────────
+// Solo admin+. No podés eliminarte a vos mismo. No podés eliminar a alguien de rol >= tuyo.
+const deleteUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (req.user._id.toString() === id) {
+      return res.status(400).json({ error: 'No podés eliminarte a vos mismo' });
+    }
+
+    const target = await User.findById(id);
+    if (!target) return res.status(404).json({ error: 'Usuario no encontrado' });
+
+    if (!req.user.canAssignRole(target.role)) {
+      return res.status(403).json({
+        error: `No podés eliminar a un usuario con rol "${target.role}"`,
+      });
+    }
+
+    await target.deleteOne();
+    res.status(200).json({ message: 'Usuario eliminado correctamente' });
+  } catch (err) {
+    console.error('deleteUser:', err);
+    res.status(500).json({ error: 'Error al eliminar usuario', details: err.message });
   }
 };
 
 module.exports = {
   getAllUsers,
   getUserById,
-  updateUser,
-  updateAdminStatus,
-  updatePartnerStatus,
-  updatePendingStatus,
-  isSecretariaStatus,
-  updateMedicoStatus,
   searchUsers,
+  updateUser,
+  updateUserRole,
+  deleteUser,
 };

@@ -1,44 +1,41 @@
-const express = require("express");
+const express = require('express');
 const router = express.Router();
 const {
-  addToCart,
-  getCartByUser,
   getAllCarts,
-  getLastCartByUser,
-  updateCartItems,
+  getCartsByUser,
+  getActiveCart,
+  getCartById,
+  addToCart,
+  updateCartItem,
   checkoutCart,
   updateCartStatus,
-  addCartProductRating
-} = require("../controllers/cartController");
+  uploadReceipt,
+  addCartProductRating,
+} = require('../controllers/cartController');
 
-// Importar middlewares
-const { authenticate, isAdminOrSecretaria } = require("../middlewares/authMiddleware");
+const { authenticate, isModerador } = require('../middlewares/authMiddleware');
 
-// 🔐 TODAS las rutas requieren autenticación
+// Todas requieren autenticación
 router.use(authenticate);
 
-// POST /cart/addToCart → crear carrito
-router.post("/addToCart", addToCart);
+// ─── Moderador+ ───────────────────────────────────────────────────────────────
+router.get('/all', isModerador, getAllCarts);
 
-// GET /cart/ → obtener todos los carritos (solo admin y secretaria)
-router.get("/getAllCarts", isAdminOrSecretaria, getAllCarts);
+// ─── Usuario ──────────────────────────────────────────────────────────────────
+router.get('/user/:userId',        getCartsByUser);
+router.get('/user/:userId/active', getActiveCart);
+router.get('/:cartId',             getCartById);
 
-// GET /cart/user/:userId → obtener todos los carritos de un usuario
-router.get("/user/:userId", getCartByUser);
+// ─── Carrito ──────────────────────────────────────────────────────────────────
+router.post('/',                        addToCart);
+router.patch('/:cartId/item',           updateCartItem);
+router.post('/:cartId/checkout',        checkoutCart);
+router.put('/:cartId/receipt',          uploadReceipt);
 
-// GET /cart/user/:userId/last → obtener el último carrito de un usuario
-router.get("/user/:userId/last", getLastCartByUser);
+// ─── Estado (moderador+) ─────────────────────────────────────────────────────
+router.patch('/:cartId/status', isModerador, updateCartStatus);
 
-// PUT /cart/update/:cartId → actualizar productos en el carrito
-router.put("/update/:cartId", updateCartItems);
-
-// PUT /cart/checkout/:cartId → confirmar compra
-router.put("/checkout/:cartId", checkoutCart);
-
-// PUT /cart/status/:cartId → actualizar estado del carrito (solo admin y secretaria)
-router.put("/status/:cartId", isAdminOrSecretaria, updateCartStatus);
-
-// POST /cart/:cartId/rate/:productId → agregar rating a productos en el carrito
+// ─── Ratings ──────────────────────────────────────────────────────────────────
 router.post('/:cartId/rate/:productId', addCartProductRating);
 
 module.exports = router;

@@ -1,70 +1,40 @@
 const express = require('express');
 const router = express.Router();
+
 const {
   getAllUsers,
   getUserById,
-  updateUser,
-  updateAdminStatus,
-  updatePartnerStatus,
-  updatePendingStatus,
-  isSecretariaStatus,
-  updateMedicoStatus,
-  toggleMedico,
   searchUsers,
+  updateUser,
+  updateUserRole,
+  deleteUser,
 } = require('../controllers/UserController');
 
-// Importar los nuevos controladores para imagen y QR
 const {
-  updateProfileImage,
-  deleteProfileImage,
-  generateUserQR,
-  getUserQR,
-} = require('../controllers/userProfileController');
+  authenticate,
+  isModerador,
+  isAdmin,
+  isDios,
+  canAssignRole,
+} = require('../middlewares/authMiddleware');
 
-const { authenticate, isAdmin, isAdminOrSecretaria, isAdminOrMedicoOrSecretaria } = require('../middlewares/authMiddleware');
-const { upload, processUpload } = require('../middlewares/uploadMiddleware'); // ✅ Cambiar cleanupTempFiles por processUpload
+// ─── Listar y buscar (moderador+) ────────────────────────────────────────────
+router.get('/', authenticate, isModerador, getAllUsers);
+router.get('/search', authenticate, isModerador, searchUsers);
 
-// === RUTAS EXISTENTES (las que ya tenías) ===
+// ─── Ver un usuario ──────────────────────────────────────────────────────────
+// El propio usuario o moderador+ pueden ver el perfil
+router.get('/:id', authenticate, getUserById);
 
-// Obtener todos los usuarios (accesible para admin y secretarias)
-router.get('/getUsers', authenticate, isAdminOrMedicoOrSecretaria, getAllUsers);
+// ─── Editar datos propios (name, email, savedAddress) ───────────────────────
+// La lógica de "solo el propio user o admin+" está en el controller
+router.put('/:id', authenticate, updateUser);
 
-// Obtener un usuario por ID (accesible para admin y secretarias)
-router.get('/getUser/:id', authenticate, isAdminOrMedicoOrSecretaria, getUserById);
+// ─── Cambiar rol ─────────────────────────────────────────────────────────────
+// isAdmin asegura que solo admin/dios lleguen, canAssignRole valida la jerarquía
+router.patch('/:id/role', authenticate, isAdmin, canAssignRole, updateUserRole);
 
-// Buscar usuarios por nombre o email (accesible para admin y secretarias)
-router.get('/search', authenticate, isAdminOrMedicoOrSecretaria, searchUsers);
-
-// Actualizar datos del usuario (name, email) (accesible para el usuario autenticado)
-router.put('/updateUser/:id', authenticate, updateUser);
-
-// Actualizar isPartner (accesible para admin y secretarias)
-router.patch('/togglePartner/:id', authenticate, isAdminOrSecretaria, updatePartnerStatus);
-
-// Actualizar isAdmin (solo admin)
-router.patch('/isAdmin/:id', authenticate, isAdmin, updateAdminStatus);
-
-// Actualizar isSecretaria (solo admin)
-router.patch('/isSecretaria/:id', authenticate, isAdmin, isSecretariaStatus);
-
-// Actualizar isMedico (solo admin)
-router.patch('/toggleMedico/:id', authenticate, isAdmin, updateMedicoStatus);
-
-// Actualizar isPending (solo admin)
-router.patch('/isPending/:id', authenticate, isAdmin, updatePendingStatus);
-
-// === NUEVAS RUTAS PARA FOTO DE PERFIL Y QR ===
-
-// ✅ ACTUALIZADO: Cambiar cleanupTempFiles por processUpload
-router.put('/updateProfileImage/:id', authenticate, upload.single('profileImage'), processUpload, updateProfileImage);
-
-// Eliminar foto de perfil (usuario autenticado o admin)
-router.delete('/deleteProfileImage/:id', authenticate, deleteProfileImage);
-
-// Obtener QR del usuario (usuario autenticado o admin)
-router.get('/getQR/:id', authenticate, getUserQR);
-
-// Generar QR para usuario (usuario autenticado o admin)
-router.post('/generateQR/:id', authenticate, generateUserQR);
+// ─── Eliminar usuario (admin+) ───────────────────────────────────────────────
+router.delete('/:id', authenticate, isAdmin, deleteUser);
 
 module.exports = router;
